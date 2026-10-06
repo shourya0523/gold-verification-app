@@ -86,3 +86,16 @@ def test_peak_inputs_are_first_priority(built):
               for g in json.loads(line).get("input_ids") or []}
     assert inputs and inputs <= set(rows)
     assert [g for g in inputs if rows[g]["tier"] != "P1"] == []
+
+
+def test_a_derived_row_carries_the_parts_its_documents_print(built):
+    """A bridge total is printed in neither document; the parts are, and they
+    reach the app with their own documents and add up to the total."""
+    claims = gold_claims()
+    bridged = [r for r in built["rows"] if claims[r["gold_id"]].get("bridge_components")]
+    assert bridged, "gold has no bridge rows: this test no longer checks anything"
+    for row in bridged:
+        parts = claims[row["gold_id"]]["bridge_components"]
+        assert [(i["value"], i["source_url"]) for i in row["inputs"]] == [(p["value"], p["source_url"]) for p in parts]
+        assert sum(i["value"] for i in row["inputs"]) == row["value_reported"], row["gold_id"]
+    assert all(r["inputs"] == [] for r in built["rows"] if r not in bridged)

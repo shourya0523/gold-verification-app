@@ -224,8 +224,26 @@ function stripActive(html, baseUrl) {
   return "<!doctype html>" + parsed.documentElement.outerHTML;
 }
 
+/**
+ * Undo whatever keeps el out of sight in a source page: a collapsed "read
+ * more" section, a closed <details>, a hidden attribute. The page's own button
+ * for it needs the scripts the preview removes.
+ */
+export function reveal(el) {
+  const win = el.ownerDocument.defaultView;
+  if (!win) return;
+  for (let node = el; node; node = node.parentElement) {
+    if (node instanceof win.HTMLDetailsElement) node.open = true;
+    node.removeAttribute("hidden");
+    const style = win.getComputedStyle(node);
+    if (style.display === "none") node.style.setProperty("display", "block", "important");
+    if (style.visibility === "hidden") node.style.setProperty("visibility", "visible", "important");
+  }
+}
+
 /** Scroll only the document pane (never the app page) so el sits mid-view. */
 function centerIn(el) {
+  reveal(el);
   const doc = el.ownerDocument;
   const r = el.getBoundingClientRect();
   if (doc !== document) {
@@ -256,7 +274,7 @@ function pdfjs() {
 }
 
 /** Text items of one page grouped into visual lines. */
-async function pageLines(page) {
+export async function pageLines(page) {
   const content = await page.getTextContent();
   const lines = new Map();
   for (const item of content.items) {
@@ -272,17 +290,29 @@ async function pageLines(page) {
 }
 
 /** For each line naming the product, the items printed level with it: a table
- * row whose label and numbers sit at slightly different heights. */
-function rowBands(lines, t) {
+ * row whose label and numbers sit at slightly different heights. A name printed
+ * as a heading, with no numbers of its own, is followed by its lines beneath
+ * (US / Intl / WW) down to the next line without numbers, the next heading. */
+export function rowBands(lines, t) {
   const items = lines.flatMap((l) => l.items);
-  const bands = [];
-  for (const line of lines) {
-    if (!t.hasName(norm(line.text))) continue;
+  const bandAt = (line) => {
     const y = line.items[0].transform[5];
     const tol = Math.max(3, (line.items[0].height || 8) * 0.6);
     const level = items.filter((i) => Math.abs(i.transform[5] - y) <= tol).sort((a, b) => a.transform[4] - b.transform[4]);
-    bands.push({ items: level, text: level.map((i) => i.str).join(" ") });
-  }
+    return { items: level, text: level.map((i) => i.str).join(" ") };
+  };
+  const ordered = [...lines].sort((a, b) => b.items[0].transform[5] - a.items[0].transform[5]);
+  const bands = [];
+  ordered.forEach((line, n) => {
+    if (!t.hasName(norm(line.text))) return;
+    const own = bandAt(line);
+    bands.push(own);
+    if (/\d/.test(own.text)) return;
+    for (const below of ordered.slice(n + 1)) {
+      if (!/\d/.test(below.text) || t.hasName(norm(below.text))) break;
+      bands.push({ ...bandAt(below), heading: own.items });
+    }
+  });
   return bands;
 }
 
@@ -453,6 +483,7 @@ export class Preview {
         if (rx && rx.test(item.str)) first = first || box(item, "fig");
         else if (t.hasName(norm(item.str))) box(item, "label");
       }
+      for (const item of line.heading || []) if (t.hasName(norm(item.str))) box(item, "label");
       const rowBox = line.items.reduce((acc, item) => {
         const [, , , , x, y] = item.transform;
         return { minX: Math.min(acc.minX, x), maxX: Math.max(acc.maxX, x + item.width),

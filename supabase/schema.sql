@@ -47,6 +47,9 @@ create table if not exists rows (
   line_label            text,
   source_url            text not null,
   source_quote          text not null,
+  -- The figures a derived row is built from, each with its own document:
+  -- [{value, source_url, label}]. Empty for a figure the document prints.
+  inputs                jsonb not null default '[]'::jsonb,
   automated_check       text not null check (automated_check in ('pass', 'fail', 'none')),
   claude_checked        boolean not null default false,
   claude_note           text not null default '',
@@ -56,6 +59,8 @@ create table if not exists rows (
   gold_build            text,
   loaded_at             timestamptz not null default now()
 );
+-- For a project created before the column existed.
+alter table rows add column if not exists inputs jsonb not null default '[]'::jsonb;
 create index if not exists rows_batch_idx on rows (batch_id);
 create index if not exists rows_drug_idx on rows (drug_name, period);
 create index if not exists rows_source_url_idx on rows (source_url);
@@ -174,20 +179,20 @@ begin
   insert into rows (
     gold_id, batch_id, kind, tier, reasons, drug_name, generic_name, issuer, period, period_type,
     value_reported, currency, source_unit, source_value_reported, value_usd_millions,
-    derivation, scope, line_label, source_url, source_quote, automated_check, claude_checked,
+    derivation, scope, line_label, source_url, source_quote, inputs, automated_check, claude_checked,
     claude_note, claude_suggestion, in_current_gold, gold_build, loaded_at)
   select r.gold_id, r.batch_id, coalesce(r.kind, 'quarterly'), r.tier, coalesce(r.reasons, '{}'), r.drug_name, r.generic_name,
          r.issuer, r.period, r.period_type, r.value_reported, coalesce(r.currency, ''),
          coalesce(r.source_unit, ''), r.source_value_reported, r.value_usd_millions,
          r.derivation, r.scope, r.line_label, r.source_url,
-         r.source_quote, r.automated_check, coalesce(r.claude_checked, false),
+         r.source_quote, coalesce(r.inputs, '[]'::jsonb), r.automated_check, coalesce(r.claude_checked, false),
          coalesce(r.claude_note, ''), coalesce(r.claude_suggestion, ''), true, build, now()
   from jsonb_to_recordset(rows_in) as r(
     gold_id text, batch_id text, kind text, tier text, reasons text[], drug_name text, generic_name text,
     issuer text, period text, period_type text, value_reported numeric, currency text,
     source_unit text, source_value_reported numeric, value_usd_millions numeric,
     derivation text, scope text, line_label text, source_url text, source_quote text,
-    automated_check text,
+    inputs jsonb, automated_check text,
     claude_checked boolean, claude_note text, claude_suggestion text)
   on conflict (gold_id) do update set
     batch_id = excluded.batch_id, kind = excluded.kind, tier = excluded.tier, reasons = excluded.reasons,
@@ -197,7 +202,7 @@ begin
     source_unit = excluded.source_unit, source_value_reported = excluded.source_value_reported,
     value_usd_millions = excluded.value_usd_millions, derivation = excluded.derivation,
     scope = excluded.scope, line_label = excluded.line_label, source_url = excluded.source_url,
-    source_quote = excluded.source_quote, automated_check = excluded.automated_check,
+    source_quote = excluded.source_quote, inputs = excluded.inputs, automated_check = excluded.automated_check,
     claude_checked = excluded.claude_checked, claude_note = excluded.claude_note,
     claude_suggestion = excluded.claude_suggestion, in_current_gold = true,
     gold_build = excluded.gold_build, loaded_at = now();

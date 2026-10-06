@@ -178,6 +178,8 @@ section.page { margin-top: 20px; }
 .figure .usd { width: 100%; color: var(--text-3); font-size: 13px; }
 .quote { font: 12.5px/1.6 var(--mono); background: var(--surface-2); border-radius: var(--radius-sm); padding: 10px 12px;
          color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.inputs { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-top: 10px; }
+.inputs .muted { width: 100%; }
 .srcrow { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 10px; font-size: 13px; }
 .srcrow .host { color: var(--text-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
 .facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border);

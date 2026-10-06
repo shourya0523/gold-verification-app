@@ -272,6 +272,15 @@ async function renderBatch(batchId, wanted) {
   let index = rows.findIndex((r) => r.gold_id === wanted);
   if (index < 0) index = Math.max(0, rows.findIndex((r) => !mine(r)));
   let pending = null; // flag reason chosen but not saved
+  // A derived total is printed in no document, so the preview shows one of its
+  // inputs instead: first the one the row's own document prints.
+  let shown = 0;
+  const firstInput = (r) => Math.max(0, (r.inputs || []).findIndex((i) => i.source_url === r.source_url));
+  const previewRow = (r) => {
+    const input = (r.inputs || [])[shown];
+    return input ? { ...r, source_url: input.source_url, value_reported: input.value,
+      source_value_reported: input.value, source_unit: "millions", source_quote: "" } : r;
+  };
 
   const section = $app.querySelector("section.page");
   section.innerHTML = `<div class="review"><div class="card rowcard" id="card"></div>
@@ -357,6 +366,7 @@ async function renderBatch(batchId, wanted) {
 
   function draw(rowChanged = false) {
     const r = rows[index];
+    if (rowChanged) shown = firstInput(r);
     const own = mine(r);
     const others = (verdicts.get(r.gold_id) || []).filter((v) => v.reviewer !== state.me.email);
     const exclusion = r.kind === "exclusion";
@@ -379,7 +389,9 @@ async function renderBatch(batchId, wanted) {
         : `<div class="figure"><span class="num">${fmt(r.value_reported)}</span><span class="unit">${esc(r.currency)} millions</span>
           <span class="usd">${r.source_unit && r.source_unit !== "millions" ? `Printed as ${fmt(r.source_value_reported)} ${esc(r.source_unit)} · ` : ""}${r.derivation.startsWith("direct") ? esc(r.derivation.replace(/_/g, " ")) : `Derived: ${esc(r.derivation.replace(/_/g, " "))}`}${r.currency !== "USD" && r.value_usd_millions !== null ? ` · ≈ ${fmt(r.value_usd_millions, 1)} USD m` : ""}</span></div>`}
       <div class="quote">${esc(r.source_quote)}</div>
-      <div class="srcrow"><a class="btn small" href="${esc(openUrl(r))}" target="gv-source" rel="noopener">Open source ↗ <kbd>O</kbd></a>
+      ${(r.inputs || []).length ? `<div class="inputs"><span class="muted small">Not printed: ${r.inputs.map((i) => fmt(i.value)).join(" + ")} = ${fmt(r.value_reported)}. Check each part:</span>
+        ${r.inputs.map((i, n) => `<button class="btn ghost small ${n === shown ? "on" : ""}" data-input="${n}">${fmt(i.value)} · ${esc(i.label)} · ${esc(host(i.source_url))}</button>`).join("")}</div>` : ""}
+      <div class="srcrow"><a class="btn small" href="${esc(openUrl(previewRow(r)))}" target="gv-source" rel="noopener">Open source ↗ <kbd>O</kbd></a>
         <button class="btn ghost small" id="copyq">Copy quote</button>
         <span class="host">${esc(host(r.source_url))}</span><span class="spacer"></span>
         ${r.automated_check === "pass" ? '<span class="chip ok">automated check passed</span>' : r.automated_check === "fail" ? '<span class="chip flag">automated check failed</span>' : ""}</div>
@@ -422,8 +434,12 @@ async function renderBatch(batchId, wanted) {
     card.querySelectorAll("[data-reason]").forEach((b) => b.onclick = () => choose(b.dataset.reason));
     card.querySelector("#saveflag").onclick = saveFlag;
     card.querySelector("#cancelflag").onclick = () => { pending = null; draw(); };
-    section.querySelector("#pvopen").href = openUrl(r);
-    if (rowChanged) { find.value = ""; preview.findQuery = null; preview.show(r); card.scrollTop = 0; }
+    card.querySelectorAll("[data-input]").forEach((b) => b.onclick = () => {
+      shown = Number(b.dataset.input);
+      find.value = ""; preview.findQuery = null; preview.show(previewRow(r)); draw();
+    });
+    section.querySelector("#pvopen").href = openUrl(previewRow(r));
+    if (rowChanged) { find.value = ""; preview.findQuery = null; preview.show(previewRow(r)); card.scrollTop = 0; }
   }
 
   function choose(reason) {
@@ -453,7 +469,7 @@ async function renderBatch(batchId, wanted) {
     else if (k === "escape") { pending = null; draw(); }
     else if (k === "j" || e.key === "ArrowDown") { e.preventDefault(); go(index + 1); }
     else if (k === "k" || e.key === "ArrowUp") { e.preventDefault(); go(index - 1); }
-    else if (k === "o") { e.preventDefault(); window.open(openUrl(rows[index]), "gv-source", "noopener"); }
+    else if (k === "o") { e.preventDefault(); window.open(openUrl(previewRow(rows[index])), "gv-source", "noopener"); }
     else if (k === "/") { e.preventDefault(); find.focus(); find.select(); }
   };
   document.addEventListener("keydown", onKey);
@@ -546,7 +562,7 @@ async function renderProgress() {
         ${people.map((p) => `<tr><td>${esc(p.display_name)}</td><td class="n">${fmt(p.verdicts)}</td><td class="n">${fmt(p.confirmed)}</td><td class="n">${fmt(p.flagged)}</td><td class="small muted">${p.last_active ? new Date(p.last_active).toLocaleString() : "—"}</td></tr>`).join("")}</table></div>
       <div class="card panel"><h3>Gold rows</h3><div class="loadbox">
         <div class="small">${fmt(currentRows)} rows in the current build${build[0] ? ` · build ${esc(build[0].gold_build)}, loaded ${new Date(build[0].loaded_at).toLocaleString()}` : ""}.</div>
-        <div class="small muted">To load or refresh, choose <code>tools/verification-app/data/rows.json</code> (made by <code>scripts/build_rows.py</code>). Verdicts are kept; rows whose figure changed show their verdicts as needing a re-check.</div>
+        <div class="small muted">To load or refresh, choose <code>data/rows.json</code> (made by <code>scripts/build_rows.py</code>). Verdicts are kept; rows whose figure changed show their verdicts as needing a re-check.</div>
         <input type="file" id="goldfile" accept="application/json,.json" class="input">
         <div id="loadmsg" class="small"></div>
         <div><button class="btn small" id="export">Download all verdicts (CSV)</button></div>

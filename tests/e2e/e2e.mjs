@@ -200,6 +200,37 @@ try {
     if (h.startsWith("host:") && /found/i.test(status) && !/not found/i.test(status)) await a.screenshot({ path: `${out}/preview-${h.replace(/[^a-z0-9]+/gi, "_")}.png` });
   }
 
+  // 8b. A highlighted figure is on screen, even inside a section the page
+  // collapses (a "read more" wrapper the removed scripts would have opened).
+  const hidden = await a.evaluate(() => {
+    const d = document.querySelector("#pv iframe")?.contentDocument;
+    return d ? [...d.querySelectorAll(".gv-fig")].filter((m) => !m.getClientRects().length).length : 0;
+  });
+  check("the last highlighted figure is visible", hidden === 0, `${hidden} hidden`);
+  const collapsed = data.rows.find((r) => r.source_url.includes("finance.yahoo.com") && r.value_reported !== null);
+  if (collapsed) {
+    await a.goto(`${base}/#/batch/${encodeURIComponent(collapsed.batch_id)}/${encodeURIComponent(collapsed.gold_id)}`);
+    await a.waitForFunction(() => !/Loading|Looking/.test(document.querySelector("#pvstatus")?.textContent || "Loading"), null, { timeout: 90_000 });
+    const seen = await a.evaluate(() => {
+      const d = document.querySelector("#pv iframe")?.contentDocument;
+      const m = d && (d.querySelector(".gv-fig") || d.querySelector(".gv-row"));
+      return m ? { visible: m.getClientRects().length > 0, text: m.textContent.slice(0, 80) } : null;
+    });
+    check("a figure in a collapsed section is revealed", !!seen?.visible, `${collapsed.gold_id}: ${JSON.stringify(seen)} · ${(await a.textContent("#pvstatus")).trim()}`);
+  }
+
+  // 8c. A derived total is printed nowhere: each part is found in its own document.
+  for (const r of data.rows.filter((x) => x.inputs.length)) {
+    await a.goto(`${base}/#/batch/${encodeURIComponent(r.batch_id)}/${encodeURIComponent(r.gold_id)}`);
+    for (let n = 0; n < r.inputs.length; n++) {
+      await a.click(`[data-input="${n}"]`);
+      await a.waitForFunction(() => !/Loading|Looking/.test(document.querySelector("#pvstatus").textContent), null, { timeout: 90_000 });
+      const status = (await a.textContent("#pvstatus")).trim();
+      const marked = await a.$$eval("#pv .pv-hl.fig, #pv .hl.fig, #pv [class*=fig]", (els) => els.length);
+      check(`bridge part ${r.inputs[n].value} of ${r.gold_id} is found`, /found/i.test(status) && !/not found/i.test(status), `${status}; ${marked} marks`);
+    }
+  }
+
   // Phone width: the review page must not scroll sideways.
   const p = await as("asha", { width: 390, height: 844 });
   await p.goto(`${base}/#/queue`);

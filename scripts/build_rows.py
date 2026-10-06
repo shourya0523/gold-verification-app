@@ -117,7 +117,17 @@ def note_for(row: dict, reasons: list[str], context: dict) -> tuple[str, str]:
     text = f"{row['source_quote']} {row.get('gold_notes') or ''}".lower()
     derivation = row["derivation"]
 
-    if derivation in DERIVATION_TEXT:
+    inputs = inputs_of(row)
+    if inputs:
+        terms = " + ".join(f"{i['value']:,g}" for i in inputs)
+        parts = "; ".join(f"{i['value']:,g} ({i['label']}, {urlparse(i['source_url']).netloc})" for i in inputs)
+        notes.append(
+            f"Not printed anywhere: this quarter is {DERIVATION_TEXT[derivation]}, "
+            f"{terms} = "
+            f"{row['value_reported']:,g}. Check each part in its own document: {parts}. "
+            "A matching total elsewhere in the table is another column, not this quarter."
+        )
+    elif derivation in DERIVATION_TEXT:
         urls = [u for u in re.findall(r"https?://[^\s,;)'\"]+", row.get("gold_notes") or "")
                 if u.rstrip(".") != row["source_url"]]
         notes.append(
@@ -232,6 +242,25 @@ def peak_inputs() -> dict[str, str]:
     return out
 
 
+def inputs_of(row: dict) -> list[dict]:
+    """The figures a derived row is built from, each with the document that prints
+    it, where the row records them as data (an acquisition bridge's part-quarters).
+
+    The derived total is printed in neither document, so the preview looks for
+    these instead: a search for the total can only find some other figure that
+    happens to equal it.
+    """
+    out = []
+    for part in row.get("bridge_components") or []:
+        start, _, end = (part.get("covers") or "").partition("/")
+        out.append({
+            "value": part["value"],
+            "source_url": part["source_url"],
+            "label": f"{part.get('issuer') or 'issuer'}, {start} to {end}" if end else part.get("issuer") or "",
+        })
+    return out
+
+
 def figure_row(row: dict, kind: str, tier: str, reasons: list[str], note: str, suggestion: str,
                automated: str = "none", checked: bool = False) -> dict:
     period = row.get("period") or ""
@@ -256,6 +285,7 @@ def figure_row(row: dict, kind: str, tier: str, reasons: list[str], note: str, s
         "line_label": row.get("line_label") or row["drug_name"],
         "source_url": row["source_url"],
         "source_quote": row.get("source_quote") or "",
+        "inputs": inputs_of(row),
         "automated_check": automated,
         "claude_checked": checked,
         "claude_note": note,
