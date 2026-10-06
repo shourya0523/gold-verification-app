@@ -150,35 +150,61 @@ function namesRegex(names) {
   return new RegExp(names.map(one).join("|"), "gi");
 }
 
+// Whitespace-free lower case, for a cheap first test before spacedText().
+const squash = (s) => norm(s).replace(/\s+/g, "");
+
 /** The smallest element whose text contains one of the quote's pieces. */
 function locateQuoteInHtml(doc, t) {
+  const elements = [...doc.querySelectorAll("p, li, td, tr, h1, h2, h3, h4, div, span")];
   for (const piece of t.pieces) {
+    const squashed = piece.replace(/\s+/g, "");
     let best = null;
-    for (const el of doc.querySelectorAll("p, li, td, tr, h1, h2, h3, h4, div, span")) {
-      const text = norm(el.textContent);
-      if (text.includes(piece) && (!best || text.length < norm(best.textContent).length)) best = el;
+    for (const el of elements) {
+      const raw = el.textContent;
+      if (raw.length > 20000 || (best && raw.length >= best.textContent.length)) continue;
+      if (!squash(raw).includes(squashed)) continue;
+      if (norm(spacedText(el)).includes(piece)) best = el;
     }
     if (best) return best;
   }
   return null;
 }
 
+/** An element's text with its text nodes joined by spaces: table cells sit
+ * side by side with no whitespace between them, so textContent of a row
+ * "Calderon | 240 | 8 | 248" reads "Calderon2408248" and no figure matches. */
+function spacedText(el) {
+  const walker = el.ownerDocument.createTreeWalker(el, NodeFilter.SHOW_TEXT);
+  const parts = [];
+  while (walker.nextNode()) parts.push(walker.currentNode.nodeValue);
+  return parts.join(" ").replace(/\u00a0/g, " ");
+}
+
 /** Find the element (table row first, then a text block) carrying the label and the figure. */
 function locateInHtml(doc, t) {
-  const candidates = (selector, rx) => {
-    for (const el of doc.querySelectorAll(selector)) {
-      const text = norm(el.textContent);
-      if (text.length > 4000) continue;
-      if (!t.hasName(text)) continue;
-      rx.lastIndex = 0;
-      if (rx.test(el.textContent.replace(/\u00a0/g, " ")) || (rx.lastIndex = 0, rx.test(el.textContent))) return el;
-    }
-    return null;
+  const squashedNames = t.names.map((n) => n.replace(/\s+/g, ""));
+  const named = (el) => {
+    const raw = el.textContent;
+    return raw.length <= 4000 && squashedNames.some((n) => squash(raw).includes(n));
   };
+  const has = (el, rx) => { rx.lastIndex = 0; return rx.test(spacedText(el)); };
+  const rowsOf = (selector) => [...doc.querySelectorAll(selector)].filter(named);
+  const tableRows = rowsOf("tr");
+  const blocks = rowsOf("p, li, td, div:not(:has(div,p,table))");
   for (const rx of [t.primary, t.secondary]) {
     if (!rx) continue;
-    const hit = candidates("tr", rx) || candidates("p, li, td, div:not(:has(div,p,table))", rx);
+    const hit = tableRows.find((el) => has(el, rx)) || blocks.find((el) => has(el, rx));
     if (hit) return { el: hit, exact: rx === t.primary };
+  }
+  // A product printed as regional lines ("Calderon - U.S.", "Europe", ...)
+  // often has its total on an unlabelled line just beneath them.
+  if (t.primary) {
+    for (const el of tableRows) {
+      let next = el.nextElementSibling;
+      for (let step = 0; next && step < 5; step += 1, next = next.nextElementSibling) {
+        if (next.tagName === "TR" && has(next, t.primary)) return { el: next, exact: true, beneath: el };
+      }
+    }
   }
   return null;
 }
@@ -204,8 +230,10 @@ function centerIn(el) {
   const r = el.getBoundingClientRect();
   if (doc !== document) {
     const win = doc.defaultView;
-    win.scrollTo({ top: win.scrollY + r.top - win.innerHeight / 2 + r.height / 2,
-      left: Math.max(0, win.scrollX + r.left - 40) });
+    // Sideways only when the figure would be off screen, so the row's label
+    // stays in view where it fits.
+    const left = r.right + win.scrollX <= win.innerWidth ? 0 : Math.max(0, win.scrollX + r.left - 40);
+    win.scrollTo({ top: win.scrollY + r.top - win.innerHeight / 2 + r.height / 2, left });
     return;
   }
   const pane = el.closest(".pv-body");
@@ -315,10 +343,10 @@ export class Preview {
       const quoted = found ? null : locateQuoteInHtml(d, t);
       if (found) {
         found.el.classList.add("gv-row");
-        markText(found.el, namesRegex(t.names), "gv-label", 3);
+        markText(found.beneath || found.el, namesRegex(t.names), "gv-label", 3);
         const figs = markText(found.el, found.exact ? t.primary : t.secondary, "gv-fig", 8);
         centerIn(figs[0] || found.el);
-        this.onStatus({ state: found.exact ? "found" : "line", exact: found.exact });
+        this.onStatus({ state: found.beneath ? "beneath" : found.exact ? "found" : "line", exact: found.exact });
       } else if (quoted) {
         quoted.classList.add("gv-row");
         markText(quoted, namesRegex(t.names), "gv-label", 5);

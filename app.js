@@ -27,7 +27,10 @@ const PAGE = 1000; // PostgREST's default row cap per request
 const db = createClient(config.supabaseUrl, config.supabaseKey, { auth: { persistSession: false } });
 const functionsUrl = config.functionsUrl || `${config.supabaseUrl}/functions/v1`;
 
-const state = { me: null, team: [], view: null, cleanup: [] };
+const state = { me: null, team: [], view: null, cleanup: [], route: 0 };
+// Each page render keeps the route number it started under; after any await it
+// stops if the reader has moved on, so a slow page never draws over a newer one.
+const current = () => { const mine = state.route; return () => mine === state.route; };
 const $app = document.getElementById("app");
 
 async function functionHeaders() {
@@ -134,12 +137,15 @@ function renderPicker() {
 async function renderQueue() {
   $app.innerHTML = `${topbar("queue")}<section class="page"><div class="empty"><span class="spinner"></span>Loading batches…</div></section>`;
   wireTopbar();
+  const live = current();
   const [tiers, batches] = await Promise.all([
     must(db.from("tier_progress").select("*").order("tier")),
     fetchAll(() => db.from("batch_progress").select("*").order("tier").order("issuer").order("id")),
   ]);
+  if (!live()) return;
   const f = Object.assign({ tier: "P1", show: "open", q: "" }, store("queue-filter") || {});
   let limit = 60;
+  const selected = new Set();
 
   const section = $app.querySelector("section.page");
   const draw = () => {
@@ -166,6 +172,7 @@ async function renderQueue() {
       const status = done ? (b.flagged_rows ? `Done · ${b.flagged_rows} flagged` : "Done")
         : b.verified_rows ? `${b.verified_rows} of ${b.row_count}${b.flagged_rows ? ` · ${b.flagged_rows} flagged` : ""}` : "Not started";
       return `<div class="batch" data-batch="${esc(b.id)}">
+        <input type="checkbox" class="pick" data-pick="${esc(b.id)}" ${selected.has(b.id) ? "checked" : ""} aria-label="Select ${esc(b.title)}">
         ${tierChip(b.tier, false)}
         <div style="min-width:0"><div class="title" title="${esc(b.title)}">${esc(b.title)}</div>
           <div class="muted small">${b.row_count} rows · ${b.document_count} document${b.document_count === 1 ? "" : "s"}</div></div>
@@ -182,6 +189,15 @@ async function renderQueue() {
         ${showBtn("open", "Not finished")}${showBtn("mine", "Mine")}${showBtn("unassigned", "Unassigned")}${showBtn("flagged", "Has flags")}${showBtn("all", "Everything")}
         <span class="spacer"></span>
         <input class="input" id="q" placeholder="Search product or issuer" value="${esc(f.q)}">
+      </div>
+      <div class="bulk">
+        <label class="small"><input type="checkbox" id="pickall" ${list.length && list.every((b) => selected.has(b.id)) ? "checked" : ""}> Select all ${fmt(list.length)} shown</label>
+        ${selected.size ? `<span class="small"><b>${fmt(selected.size)}</b> selected</span>
+          <button class="btn small primary" id="bulkclaim">Claim selected</button>
+          <select class="input" id="bulkto" aria-label="Assign selected to"><option value="" disabled selected>Assign selected to…</option>
+            ${state.team.map((m) => `<option value="${esc(m.email)}">${esc(m.display_name)}</option>`).join("")}
+            <option value="__none">Unassigned</option></select>
+          <button class="btn ghost small" id="bulkclear">Clear</button>` : ""}
       </div>
       <div class="card batches">${list.length ? list.slice(0, limit).map(row).join("") : '<div class="empty">No batches match.</div>'}
         ${list.length > limit ? `<div class="more"><button class="btn small" id="more">Show ${Math.min(60, list.length - limit)} more of ${list.length - limit}</button></div>` : ""}</div>`;
@@ -203,6 +219,31 @@ async function renderQueue() {
       assign(batches.find((x) => x.id === sel.dataset.assign), sel.value));
     section.querySelectorAll("[data-claim]").forEach((btn) => btn.onclick = () =>
       assign(batches.find((x) => x.id === btn.dataset.claim), state.me.email));
+    section.querySelectorAll("[data-pick]").forEach((box) => box.onchange = () => {
+      if (box.checked) selected.add(box.dataset.pick); else selected.delete(box.dataset.pick);
+      draw();
+    });
+    section.querySelector("#pickall").onchange = (e) => {
+      for (const b of list) if (e.target.checked) selected.add(b.id); else selected.delete(b.id);
+      draw();
+    };
+    const assignMany = async (email) => {
+      const ids = [...selected];
+      try {
+        for (let i = 0; i < ids.length; i += 100) {
+          await must(db.from("batches").update({ assignee: email || null }).in("id", ids.slice(i, i + 100)));
+        }
+        for (const b of batches) if (selected.has(b.id)) b.assignee = email || null;
+        toast(`${fmt(ids.length)} batches → ${esc(email ? nameOf(email) : "unassigned")}`);
+        selected.clear();
+      } catch (err) { fail(err); }
+      draw();
+    };
+    if (selected.size) {
+      section.querySelector("#bulkclaim").onclick = () => assignMany(state.me.email);
+      section.querySelector("#bulkto").onchange = (e) => assignMany(e.target.value === "__none" ? null : e.target.value);
+      section.querySelector("#bulkclear").onclick = () => { selected.clear(); draw(); };
+    }
   };
   draw();
 }
@@ -212,7 +253,9 @@ async function renderQueue() {
 async function renderBatch(batchId, wanted) {
   $app.innerHTML = `${topbar("queue")}<section class="page"><div class="empty"><span class="spinner"></span>Loading batch…</div></section>`;
   wireTopbar();
+  const live = current();
   const [batch] = await must(db.from("batch_progress").select("*").eq("id", batchId));
+  if (!live()) return;
   if (!batch) { $app.querySelector("section").innerHTML = '<div class="empty">That batch is not in the current gold build.</div>'; return; }
   const rows = await must(db.from("rows").select("*").eq("batch_id", batchId).eq("in_current_gold", true)
     .order("source_url").order("drug_name").order("period"));
@@ -223,6 +266,7 @@ async function renderBatch(batchId, wanted) {
     for (const v of list) (verdicts.get(v.gold_id) || verdicts.set(v.gold_id, []).get(v.gold_id)).push(v);
   };
   await loadVerdicts();
+  if (!live()) return;
   const mine = (r) => (verdicts.get(r.gold_id) || []).find((v) => v.reviewer === state.me.email);
 
   let index = rows.findIndex((r) => r.gold_id === wanted);
@@ -246,6 +290,7 @@ async function renderBatch(batchId, wanted) {
         loading: "Loading source…",
         searching: `Looking for the figure… page ${s.page} of ${s.of}`,
         found: `Figure found${s.page ? ` on page ${s.page}` : ""} and highlighted`,
+        beneath: "Figure found on an unlabelled line under the product's lines and highlighted; check it is the product's total",
         line: `Product line found${s.page ? ` on page ${s.page}` : ""}; the exact figure was not matched, so check the column`,
         quote: `Quoted passage found${s.page ? ` on page ${s.page}` : ""} and highlighted`,
         "label-only": `The figure was not found; ${s.count} mentions of the product are highlighted`,
@@ -253,7 +298,7 @@ async function renderBatch(batchId, wanted) {
         failed: "Could not load here. Use Open ↗",
       }[s.state];
       statusEl.textContent = text;
-      statusEl.className = `status ${["found", "quote"].includes(s.state) ? "ok" : ["line", "label-only", "not-found", "failed"].includes(s.state) ? "warn" : ""}`;
+      statusEl.className = `status ${["found", "quote"].includes(s.state) ? "ok" : ["beneath", "line", "label-only", "not-found", "failed"].includes(s.state) ? "warn" : ""}`;
     },
   });
   const find = section.querySelector("#pvfind");
@@ -424,6 +469,7 @@ async function renderBatch(batchId, wanted) {
 async function renderFlags() {
   $app.innerHTML = `${topbar("flags")}<section class="page"><div class="empty"><span class="spinner"></span>Loading flags…</div></section>`;
   wireTopbar();
+  const live = current();
   const showResolved = store("flags-resolved") || false;
   const status = await fetchAll(() => db.from("row_status").select("gold_id,status,resolved")
     .gt("flagged_count", 0).order("gold_id"));
@@ -433,6 +479,7 @@ async function renderFlags() {
   const rows = (await Promise.all(chunks.map((c) => must(db.from("rows").select("*").in("gold_id", c))))).flat();
   const verdicts = (await Promise.all(chunks.map((c) => must(db.from("verdicts").select("*").in("gold_id", c))))).flat();
   const resolutions = (await Promise.all(chunks.map((c) => must(db.from("resolutions").select("*").in("gold_id", c))))).flat();
+  if (!live()) return;
   rows.sort((a, b) => a.tier.localeCompare(b.tier) || a.drug_name.localeCompare(b.drug_name) || a.period.localeCompare(b.period));
 
   const section = $app.querySelector("section.page");
@@ -472,13 +519,15 @@ async function renderFlags() {
 async function renderProgress() {
   $app.innerHTML = `${topbar("progress")}<section class="page"><div class="empty"><span class="spinner"></span>Loading…</div></section>`;
   wireTopbar();
-  const [tiers, people, kinds, current, build] = await Promise.all([
+  const live = current();
+  const [tiers, people, kinds, currentRows, build] = await Promise.all([
     must(db.from("tier_progress").select("*").order("tier")),
     must(db.from("reviewer_progress").select("*").order("verdicts", { ascending: false })),
     fetchAll(() => db.from("row_status").select("kind,status").order("gold_id")),
     must(db.from("rows").select("gold_id", { count: "exact", head: true }).eq("in_current_gold", true)),
     must(db.from("rows").select("gold_build,loaded_at").eq("in_current_gold", true).order("loaded_at", { ascending: false }).limit(1)),
   ]);
+  if (!live()) return;
   const byKind = {};
   for (const k of kinds) {
     const e = byKind[k.kind] ||= { rows: 0, done: 0, flagged: 0 };
@@ -496,7 +545,7 @@ async function renderProgress() {
       <div class="card panel"><h3>Reviewers</h3><table class="plain"><tr><th>Who</th><th class="n">Verdicts</th><th class="n">Confirmed</th><th class="n">Flagged</th><th>Last active</th></tr>
         ${people.map((p) => `<tr><td>${esc(p.display_name)}</td><td class="n">${fmt(p.verdicts)}</td><td class="n">${fmt(p.confirmed)}</td><td class="n">${fmt(p.flagged)}</td><td class="small muted">${p.last_active ? new Date(p.last_active).toLocaleString() : "—"}</td></tr>`).join("")}</table></div>
       <div class="card panel"><h3>Gold rows</h3><div class="loadbox">
-        <div class="small">${fmt(current)} rows in the current build${build[0] ? ` · build ${esc(build[0].gold_build)}, loaded ${new Date(build[0].loaded_at).toLocaleString()}` : ""}.</div>
+        <div class="small">${fmt(currentRows)} rows in the current build${build[0] ? ` · build ${esc(build[0].gold_build)}, loaded ${new Date(build[0].loaded_at).toLocaleString()}` : ""}.</div>
         <div class="small muted">To load or refresh, choose <code>tools/verification-app/data/rows.json</code> (made by <code>scripts/build_rows.py</code>). Verdicts are kept; rows whose figure changed show their verdicts as needing a re-check.</div>
         <input type="file" id="goldfile" accept="application/json,.json" class="input">
         <div id="loadmsg" class="small"></div>
@@ -571,6 +620,7 @@ async function exportVerdicts() {
 
 async function route() {
   state.cleanup.forEach((f) => f()); state.cleanup = []; state.onChange = null;
+  state.route += 1;
   const [, page, a, b] = (location.hash || "#/queue").split("/").map(decodeURIComponent);
   try {
     if (page === "batch" && a) await renderBatch(a, b);
