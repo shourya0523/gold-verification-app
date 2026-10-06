@@ -98,6 +98,23 @@ create table if not exists app_config (
 alter table app_config enable row level security;
 revoke all on app_config from anon, authenticated;
 
+-- Source documents the preview function has already fetched. The bytes live in
+-- the private storage bucket source-cache; this table says where and what they
+-- are. Service role only, so a repeat view never goes back to SEC.
+insert into storage.buckets (id, name, public)
+  values ('source-cache', 'source-cache', false)
+  on conflict (id) do nothing;
+
+create table if not exists source_cache (
+  url          text primary key,
+  path         text not null,
+  final_url    text not null,
+  content_type text not null,
+  fetched_at   timestamptz not null default now()
+);
+alter table source_cache enable row level security;
+revoke all on source_cache from anon, authenticated;
+
 -- A verdict records which gold figure the reviewer was shown, whatever the
 -- client sent, and when it was last changed.
 create or replace function verdict_stamp() returns trigger

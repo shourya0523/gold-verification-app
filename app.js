@@ -34,7 +34,11 @@ const current = () => { const mine = state.route; return () => mine === state.ro
 const $app = document.getElementById("app");
 
 async function functionHeaders() {
-  return { apikey: config.supabaseKey };
+  // x-reviewer lets the function use the signed-in reviewer's own email as the
+  // SEC contact, so each reviewer gets their own rate limit.
+  return state.me
+    ? { apikey: config.supabaseKey, "x-reviewer": state.me.email }
+    : { apikey: config.supabaseKey };
 }
 
 function store(key, value) {
