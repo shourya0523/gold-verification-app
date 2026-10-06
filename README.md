@@ -59,7 +59,7 @@ Then in the app go to **Progress → Gold rows** and choose `data/rows.json`.
 
 ### One-time settings
 
-- **SEC contact:** SEC asks automated clients to name a contact. The preview function reads one from `app_config`:
+- **SEC contact:** SEC asks automated clients to name a contact. Each preview request declares the requesting reviewer's own `team_members` email (so SEC rate-limits reviewers separately). When none is sent, the function falls back to one from `app_config`:
 
       insert into app_config values ('sec_contact', 'Team name contact@company.com')
         on conflict (key) do update set value = excluded.value;
