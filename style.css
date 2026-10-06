@@ -59,6 +59,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font);
        font-feature-settings: "tnum" 1; -webkit-font-smoothing: antialiased; }
 a { color: var(--accent); text-decoration: none; }

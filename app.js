@@ -129,19 +129,35 @@ function wireTopbar() {
 function renderSignIn(message = "") {
   $app.innerHTML = `<div class="card signin">
     <h1>Gold verification</h1>
-    <p class="muted">Sign in with your work email. We'll send you a link; open it on this device.</p>
+    <p class="muted">Sign in with your work email. We'll email you a 6-digit code (and a link).</p>
     <form id="signin"><input class="input" type="email" name="email" required placeholder="you@company.com" autocomplete="email">
-    <button class="btn primary" type="submit">Email me a sign-in link</button></form>
+    <button class="btn primary" type="submit">Email me a code</button></form>
+    <form id="code" hidden><input class="input" name="code" inputmode="numeric" autocomplete="one-time-code"
+      pattern="[0-9]{6,10}" required placeholder="Code from the email">
+    <button class="btn primary" type="submit">Sign in</button></form>
     <p class="small" id="signinmsg">${message}</p></div>`;
+  const msg = document.getElementById("signinmsg");
+  const codeForm = document.getElementById("code");
+  let email = "";
   document.getElementById("signin").onsubmit = async (e) => {
     e.preventDefault();
-    const email = new FormData(e.target).get("email").trim();
-    const msg = document.getElementById("signinmsg");
+    email = new FormData(e.target).get("email").trim().toLowerCase();
     msg.textContent = "Sending…";
     const { error } = await db.auth.signInWithOtp({
       email, options: { emailRedirectTo: location.origin + location.pathname },
     });
-    msg.textContent = error ? `Could not send: ${error.message}` : `Check ${email} for the sign-in link.`;
+    if (error) { msg.textContent = `Could not send: ${error.message}`; return; }
+    // A code typed here cannot be used up by a mail scanner that opens links.
+    msg.textContent = `Sent to ${email}. Enter the code from the email, or open its link on this device. Check junk or quarantine if it does not arrive.`;
+    codeForm.hidden = false;
+    codeForm.querySelector("input").focus();
+  };
+  codeForm.onsubmit = async (e) => {
+    e.preventDefault();
+    const token = new FormData(codeForm).get("code").trim();
+    msg.textContent = "Checking…";
+    const { error } = await db.auth.verifyOtp({ email, token, type: "email" });
+    if (error) msg.textContent = `That code did not work: ${error.message}. Request a new one above.`;
   };
 }
 
