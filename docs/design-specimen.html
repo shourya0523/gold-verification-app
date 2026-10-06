@@ -1,0 +1,394 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Gold Verification Design</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Newsreader:opsz,wght@6..72,500;6..72,600&display=swap" rel="stylesheet">
+<style>
+/* Design tokens. The app's style.css takes these verbatim. */
+:root {
+  --bg: #f7f7f5;          /* page */
+  --surface: #ffffff;     /* cards */
+  --surface-2: #f1f1ee;   /* wells, quote block, hover */
+  --border: #e6e5e0;
+  --border-strong: #d4d3cc;
+  --text: #1f1f1d;
+  --text-2: #5f5e58;
+  --text-3: #8f8e86;
+  --accent: #2d5a87;      /* focus, links */
+  --accent-soft: #e8eef5;
+  --ok: #2f7a4f;   --ok-soft: #e5f1e9;
+  --flag: #c2410c; --flag-soft: #fdeee6;
+  --warn: #a16207; --warn-soft: #fbf3dc;
+  --p1: #c2410c; --p1-soft: #fdeee6;
+  --p2: #a16207; --p2-soft: #fbf3dc;
+  --p3: #5f6b7a; --p3-soft: #eef0f3;
+  --claude: #6b5a3e; --claude-soft: #f5f0e6;
+  --radius: 12px; --radius-sm: 8px; --radius-pill: 999px;
+  --shadow: 0 1px 2px rgba(20,20,15,.04), 0 1px 1px rgba(20,20,15,.03);
+  --font: "IBM Plex Sans", "Helvetica Neue", Arial, sans-serif;
+  --serif: "Newsreader", Georgia, serif;
+  --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161615; --surface: #1e1e1c; --surface-2: #262624;
+    --border: #2f2f2c; --border-strong: #3d3d39;
+    --text: #ecebe6; --text-2: #b3b2aa; --text-3: #7f7e77;
+    --accent: #8fb3d9; --accent-soft: #1f2a36;
+    --ok: #5cc78d; --ok-soft: #1c3226;
+    --flag: #f08a5d; --flag-soft: #3a2419;
+    --warn: #e0b54f; --warn-soft: #362d17;
+    --p1: #f08a5d; --p1-soft: #3a2419;
+    --p2: #e0b54f; --p2-soft: #362d17;
+    --p3: #a3adbb; --p3-soft: #2a2d32;
+    --claude: #d2bf98; --claude-soft: #2a261e;
+    --shadow: none;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161615; --surface: #1e1e1c; --surface-2: #262624;
+  --border: #2f2f2c; --border-strong: #3d3d39;
+  --text: #ecebe6; --text-2: #b3b2aa; --text-3: #7f7e77;
+  --accent: #8fb3d9; --accent-soft: #1f2a36;
+  --ok: #5cc78d; --ok-soft: #1c3226;
+  --flag: #f08a5d; --flag-soft: #3a2419;
+  --warn: #e0b54f; --warn-soft: #362d17;
+  --p1: #f08a5d; --p1-soft: #3a2419;
+  --p2: #e0b54f; --p2-soft: #362d17;
+  --p3: #a3adbb; --p3-soft: #2a2d32;
+  --claude: #d2bf98; --claude-soft: #2a261e;
+  --shadow: none;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 var(--font);
+       font-feature-settings: "tnum" 1; -webkit-font-smoothing: antialiased; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrap { max-width: 1080px; margin: 0 auto; padding: 32px 16px 80px; }
+h1 { font: 600 28px/1.2 var(--serif); letter-spacing: -.01em; margin: 0; }
+h2 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+     color: var(--text-3); margin: 56px 0 14px; }
+.lede { color: var(--text-2); margin: 6px 0 0; max-width: 64ch; }
+.row { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.spacer { flex: 1; }
+
+/* Shell */
+.topbar { display: flex; align-items: center; gap: 20px; padding: 10px 16px; background: var(--surface);
+          border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.brand { font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.brand { font-family: var(--serif); font-size: 17px; }
+.brand i { display: none; }
+.nav a { color: var(--text-2); padding: 6px 10px; border-radius: var(--radius-sm); font-weight: 500; }
+.nav a.on { color: var(--text); background: var(--surface-2); }
+.nav a:hover { text-decoration: none; background: var(--surface-2); }
+.avatar { width: 26px; height: 26px; border-radius: 50%; background: var(--accent-soft); color: var(--accent);
+          display: grid; place-items: center; font-size: 12px; font-weight: 600; }
+
+/* Primitives */
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: var(--radius-pill);
+        font-size: 12px; font-weight: 500; background: var(--surface-2); color: var(--text-2); white-space: nowrap; }
+.chip.dot::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.chip.p1 { background: var(--p1-soft); color: var(--p1); }
+.chip.p2 { background: var(--p2-soft); color: var(--p2); }
+.chip.p3 { background: var(--p3-soft); color: var(--p3); }
+.chip.ok { background: var(--ok-soft); color: var(--ok); }
+.chip.flag { background: var(--flag-soft); color: var(--flag); }
+.btn { font: inherit; font-weight: 500; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+       padding: 7px 14px; border-radius: var(--radius-pill); cursor: pointer; display: inline-flex; gap: 8px; align-items: center; }
+.btn:hover { background: var(--surface-2); }
+.btn:focus-visible, .input:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn.primary { background: var(--ok); border-color: var(--ok); color: #fff; }
+:root[data-theme="dark"] .btn.primary { color: #10251a; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .btn.primary { color: #10251a; } }
+.btn.ghost { border-color: transparent; color: var(--text-2); }
+.btn.flagbtn { color: var(--flag); }
+kbd { font: 500 11px var(--mono); padding: 1px 6px; border-radius: 5px; border: 1px solid var(--border-strong);
+      border-bottom-width: 2px; color: var(--text-2); background: var(--surface); }
+.btn kbd { margin-right: -4px; }
+.btn.primary kbd { background: transparent; color: inherit; border-color: rgba(255,255,255,.45); }
+.input { font: inherit; border: 1px solid var(--border-strong); background: var(--surface); color: var(--text);
+         border-radius: var(--radius-sm); padding: 7px 10px; }
+.bar { height: 6px; border-radius: var(--radius-pill); background: var(--surface-2); overflow: hidden; display: flex; }
+.bar span { display: block; height: 100%; }
+.bar .ok { background: var(--ok); } .bar .fl { background: var(--flag); }
+.muted { color: var(--text-3); }
+.small { font-size: 12px; }
+
+/* Tokens section */
+.swatches { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.sw { padding: 10px; display: flex; gap: 10px; align-items: center; }
+.sw b { width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--border); flex: none; }
+.sw div { font-size: 12px; line-height: 1.3; }
+.type .card { padding: 18px 20px; }
+.type .sample-fig { font-size: 34px; font-weight: 600; letter-spacing: -.02em; }
+
+/* Queue screen */
+.tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.tier { padding: 16px 18px; }
+.tier .n { font-size: 24px; font-weight: 600; letter-spacing: -.01em; }
+.batches { margin-top: 16px; }
+.batch { display: grid; grid-template-columns: 48px 1fr 180px 160px 90px; gap: 16px; align-items: center;
+         padding: 14px 18px; border-top: 1px solid var(--border); }
+.batch:first-child { border-top: 0; }
+.batch:hover { background: var(--surface-2); }
+.batch .title { font-weight: 500; }
+.batch select { width: 100%; }
+
+/* Review screen */
+.review { display: grid; grid-template-columns: 260px 1fr; gap: 16px; align-items: start; }
+.rail { padding: 8px; }
+.rail .it { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: var(--radius-sm); font-size: 13px; }
+.rail .it.on { background: var(--accent-soft); }
+.rail .it .st { width: 8px; height: 8px; border-radius: 50%; border: 1.5px solid var(--border-strong); flex: none; }
+.rail .it .st.ok { background: var(--ok); border-color: var(--ok); }
+.rail .it .st.fl { background: var(--flag); border-color: var(--flag); }
+.rail .it .v { margin-left: auto; color: var(--text-3); }
+.rowcard { padding: 26px 30px; }
+.rowcard .head { display: flex; align-items: flex-start; gap: 12px; }
+.rowcard .drug { font: 600 26px/1.15 var(--serif); letter-spacing: -.01em; }
+.rowcard .meta { color: var(--text-2); margin-top: 2px; }
+.figure { display: flex; align-items: baseline; gap: 10px; margin: 26px 0 22px; }
+.figure .num { font-size: 44px; font-weight: 600; letter-spacing: -.02em; line-height: 1; }
+.figure .unit { color: var(--text-2); }
+.figure .usd { margin-left: auto; color: var(--text-3); font-size: 13px; }
+.quote { font: 13px/1.6 var(--mono); background: var(--surface-2); border-radius: var(--radius-sm); padding: 12px 14px;
+         color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.quote mark { background: var(--warn-soft); color: inherit; border-radius: 3px; padding: 0 2px; }
+.src { display: flex; gap: 10px; align-items: center; margin-top: 10px; font-size: 13px; }
+.note { margin-top: 20px; padding: 12px 14px; border-radius: var(--radius-sm); background: var(--claude-soft); }
+.note .who { color: var(--claude); font-weight: 600; font-size: 12px; display: flex; gap: 6px; align-items: center; }
+.note p { margin: 4px 0 0; }
+.note p + p { color: var(--text-2); }
+.facts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; background: var(--border); border: 1px solid var(--border);
+         border-radius: var(--radius-sm); overflow: hidden; margin-top: 20px; }
+.facts div { background: var(--surface); padding: 8px 12px; }
+.facts dt { font-size: 11px; color: var(--text-3); text-transform: uppercase; letter-spacing: .05em; }
+.facts dd { margin: 0; font-weight: 500; }
+.actions { display: flex; gap: 10px; align-items: center; margin-top: 24px; padding-top: 20px; border-top: 1px solid var(--border); flex-wrap: wrap; }
+.menu { position: relative; }
+.menu .pop { position: absolute; left: 0; bottom: calc(100% + 8px); width: 260px; padding: 6px; z-index: 2;
+             background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+             box-shadow: 0 8px 24px rgba(0,0,0,.12); }
+.menu .pop div { display: flex; justify-content: space-between; padding: 7px 10px; border-radius: 6px; }
+.menu .pop div:hover, .menu .pop div.on { background: var(--surface-2); }
+.reasons { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
+.reasons .btn { padding: 5px 12px; font-size: 13px; }
+.reasons .btn.on { background: var(--flag-soft); border-color: var(--flag); color: var(--flag); }
+.flagform { display: grid; grid-template-columns: 160px 1fr; gap: 10px; margin-top: 14px; }
+.others { margin-top: 18px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; font-size: 13px; }
+.keys { display: flex; gap: 16px; flex-wrap: wrap; color: var(--text-3); font-size: 12px; margin-top: 14px; }
+
+.toast { display: inline-flex; margin-top: 16px; padding: 10px 14px; gap: 10px; align-items: center; flex-wrap: wrap; }
+.theme { position: fixed; top: 16px; right: 16px; }
+
+@media (max-width: 820px) {
+  .tiers { grid-template-columns: 1fr; }
+  .review { grid-template-columns: 1fr; }
+  .rail { display: none; }
+  .batch { grid-template-columns: 40px 1fr; }
+  .batch > :nth-child(n+3) { grid-column: 2; }
+  .facts { grid-template-columns: repeat(2, 1fr); }
+  .flagform { grid-template-columns: 1fr; }
+  .nav { display: none; }
+  .rowcard { padding: 20px; }
+  .rowcard .head { flex-wrap: wrap; }
+  .figure { flex-wrap: wrap; }
+  .figure .usd { margin-left: 0; width: 100%; }
+  .topbar { flex-wrap: wrap; gap: 10px; }
+  .theme { position: static; margin: 16px 16px 0 auto; display: flex; }
+  .quote { font-size: 12px; }
+  .figure .num { font-size: 36px; }
+}
+</style>
+</head>
+<body>
+<button class="btn theme" id="theme" title="Toggle theme">◐ Theme</button>
+<div class="wrap">
+
+  <h1>Gold verification: design language</h1>
+  <p class="lede">Calm workspace, keyboard-first, light and dark. IBM Plex for interface and figures, Newsreader for product names, plain hairline cards. Below are the tokens, then the two screens people
+  spend their time on: the queue and the review card. All names and figures are invented.</p>
+
+  <!-- ───────────── Tokens ───────────── -->
+  <h2>Colour</h2>
+  <div class="swatches">
+    <div class="card sw"><b style="background:var(--bg)"></b><div>Page<br><span class="muted">--bg</span></div></div>
+    <div class="card sw"><b style="background:var(--surface)"></b><div>Card<br><span class="muted">--surface</span></div></div>
+    <div class="card sw"><b style="background:var(--surface-2)"></b><div>Well<br><span class="muted">--surface-2</span></div></div>
+    <div class="card sw"><b style="background:var(--accent)"></b><div>Accent / focus<br><span class="muted">--accent</span></div></div>
+    <div class="card sw"><b style="background:var(--ok)"></b><div>Confirmed<br><span class="muted">--ok</span></div></div>
+    <div class="card sw"><b style="background:var(--flag)"></b><div>Flagged / P1<br><span class="muted">--flag</span></div></div>
+    <div class="card sw"><b style="background:var(--warn)"></b><div>P2 / caution<br><span class="muted">--warn</span></div></div>
+    <div class="card sw"><b style="background:var(--p3)"></b><div>P3<br><span class="muted">--p3</span></div></div>
+    <div class="card sw"><b style="background:var(--claude-soft)"></b><div>Claude's notes<br><span class="muted">--claude</span></div></div>
+  </div>
+
+  <h2>Type and components</h2>
+  <div class="type" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px">
+    <div class="card">
+      <div class="sample-fig">1,234.5</div>
+      <div class="muted small">Figures: IBM Plex Sans, tabular numerals</div>
+      <div style="margin-top:12px" class="quote">Calderon | 1,234.5 | 1,101.2</div>
+      <div class="muted small" style="margin-top:6px">Source quotes: IBM Plex Mono, so columns and pipes line up</div>
+    </div>
+    <div class="card">
+      <div class="row"><span class="chip p1 dot">P1</span><span class="chip p2 dot">P2</span><span class="chip p3 dot">P3</span>
+        <span class="chip ok">Confirmed</span><span class="chip flag">Flagged</span><span class="chip">peak year</span></div>
+      <div class="row" style="margin-top:14px"><button class="btn primary">Confirm <kbd>1</kbd></button>
+        <button class="btn flagbtn">Flag <kbd>F</kbd></button><button class="btn ghost">Skip <kbd>J</kbd></button></div>
+      <div style="margin-top:14px" class="bar"><span class="ok" style="width:58%"></span><span class="fl" style="width:6%"></span></div>
+      <div class="muted small" style="margin-top:6px">Pills for actions and status; 12px radius cards; hairline borders, no side bars, no heavy shadows</div>
+    </div>
+  </div>
+
+  <!-- ───────────── Queue ───────────── -->
+  <h2>Screen 1 · Queue</h2>
+  <div class="topbar">
+    <div class="brand"><i></i>Gold verification</div>
+    <nav class="nav row"><a class="on" href="#">Queue</a><a href="#">Flags <span class="chip flag" style="padding:0 7px">3</span></a><a href="#">Progress</a></nav>
+    <div class="spacer"></div>
+    <span class="muted small">gold build 2026-10-03</span>
+    <div class="avatar">AS</div>
+  </div>
+
+  <div class="tiers" style="margin-top:16px">
+    <div class="card tier">
+      <div class="row"><span class="chip p1 dot">P1 · check first</span></div>
+      <div class="n" style="margin-top:10px">212 <span class="muted small" style="font-weight:400">of 366 reviewed</span></div>
+      <div class="bar" style="margin-top:10px"><span class="ok" style="width:55%"></span><span class="fl" style="width:3%"></span></div>
+      <div class="muted small" style="margin-top:8px">Peak years, derived quarters, failed automated checks</div>
+    </div>
+    <div class="card tier">
+      <div class="row"><span class="chip p2 dot">P2</span></div>
+      <div class="n" style="margin-top:10px">340 <span class="muted small" style="font-weight:400">of 1,571</span></div>
+      <div class="bar" style="margin-top:10px"><span class="ok" style="width:21%"></span><span class="fl" style="width:1%"></span></div>
+      <div class="muted small" style="margin-top:8px">Series ends, prose figures, issuer-website sources</div>
+    </div>
+    <div class="card tier">
+      <div class="row"><span class="chip p3 dot">P3</span></div>
+      <div class="n" style="margin-top:10px">0 <span class="muted small" style="font-weight:400">of 4,854</span></div>
+      <div class="bar" style="margin-top:10px"></div>
+      <div class="muted small" style="margin-top:8px">Table rows that passed the automated check</div>
+    </div>
+  </div>
+
+  <div class="card batches">
+    <div class="batch">
+      <span class="chip p1">P1</span>
+      <div><div class="title">Acme Biosciences: Calderon, NuVessa</div><div class="muted small">2021Q3–2023Q2 · 25 rows · 4 documents</div></div>
+      <div><div class="bar"><span class="ok" style="width:48%"></span><span class="fl" style="width:4%"></span></div>
+        <div class="muted small" style="margin-top:4px">12 of 25 · 1 flagged</div></div>
+      <select class="input"><option>Asha</option><option>Ben</option><option>Unassigned</option></select>
+      <button class="btn">Open</button>
+    </div>
+    <div class="batch">
+      <span class="chip p1">P1</span>
+      <div><div class="title">Beta Pharma: Calderon XR</div><div class="muted small">2019Q1–2019Q4 · 9 rows · 2 documents</div></div>
+      <div><div class="bar"></div><div class="muted small" style="margin-top:4px">Not started</div></div>
+      <select class="input"><option>Unassigned</option><option>Asha</option><option>Ben</option></select>
+      <button class="btn">Open</button>
+    </div>
+    <div class="batch">
+      <span class="chip p2">P2</span>
+      <div><div class="title">Acme Biosciences: Nebulized Calderon</div><div class="muted small">2015Q2–2016Q1 · 25 rows · 6 documents</div></div>
+      <div><div class="bar"><span class="ok" style="width:100%"></span></div><div class="muted small" style="margin-top:4px">Done</div></div>
+      <select class="input"><option>Ben</option></select>
+      <button class="btn">Open</button>
+    </div>
+  </div>
+
+  <!-- ───────────── Review ───────────── -->
+  <h2>Screen 2 · Review a batch</h2>
+  <div class="review">
+    <div class="card rail">
+      <div class="muted small" style="padding:6px 10px 8px">Acme Biosciences · 12 of 25</div>
+      <div class="it"><span class="st ok"></span>Calderon 2022Q1<span class="v">88.0</span></div>
+      <div class="it"><span class="st ok"></span>Calderon 2022Q2<span class="v">93.4</span></div>
+      <div class="it"><span class="st fl"></span>Calderon 2022Q3<span class="v">97.1</span></div>
+      <div class="it on"><span class="st"></span><b>Calderon 2022Q4</b><span class="v">102.6</span></div>
+      <div class="it"><span class="st"></span>NuVessa 2022Q4<span class="v">41.0</span></div>
+      <div class="it"><span class="st"></span>NuVessa 2023Q1<span class="v">44.8</span></div>
+    </div>
+
+    <div class="card rowcard">
+      <div class="head">
+        <div>
+          <div class="drug">Calderon</div>
+          <div class="meta">calderonumab · Acme Biosciences · 2022Q4 · U.S.</div>
+        </div>
+        <div class="spacer"></div>
+        <span class="chip p1 dot">P1</span><span class="chip">peak year</span><span class="chip">derived quarter</span>
+      </div>
+
+      <div class="figure">
+        <span class="num">102.6</span><span class="unit">USD millions</span>
+        <span class="usd">Derived: full year less nine months</span>
+      </div>
+
+      <div class="quote">Calderon — U.S. | year ended Dec 31, 2022 | <mark>380.1</mark>
+Calderon — U.S. | nine months ended Sep 30, 2022 | <mark>277.5</mark></div>
+      <div class="src"><a href="#">Open filing ↗</a><span class="muted">sec.gov · 10-K · filed 2023-02-14</span>
+        <span class="spacer"></span><span class="chip ok">automated check passed</span></div>
+
+      <dl class="facts">
+        <div><dt>Reported</dt><dd>102.6</dd></div>
+        <div><dt>Unit</dt><dd>millions</dd></div>
+        <div><dt>Currency</dt><dd>USD</dd></div>
+        <div><dt>Scope</dt><dd>U.S.</dd></div>
+      </dl>
+
+      <div class="note">
+        <div class="who">Claude’s note</div>
+        <p>Derived quarter: check both inputs are the same U.S. line, not one U.S. and one worldwide.</p>
+        <p>380.1 − 277.5 = 102.6. Part of Calderon's peak year, so an error here moves the peak.</p>
+      </div>
+
+      <div class="actions">
+        <button class="btn primary">Confirm <kbd>1</kbd></button>
+        <button class="btn flagbtn">Flag… <kbd>F</kbd></button>
+        <span class="spacer"></span>
+        <button class="btn ghost">Previous <kbd>K</kbd></button>
+        <button class="btn ghost">Next <kbd>J</kbd></button>
+      </div>
+
+      <div class="reasons">
+        <span class="muted small">After <kbd>F</kbd>: why is it wrong?</span>
+        <button class="btn on">Wrong value <kbd>2</kbd></button>
+        <button class="btn">Wrong period <kbd>3</kbd></button>
+        <button class="btn">Wrong scope <kbd>4</kbd></button>
+        <button class="btn">Not in source <kbd>5</kbd></button>
+        <button class="btn">Can't open source <kbd>6</kbd></button>
+      </div>
+      <div class="flagform">
+        <input class="input" placeholder="Value you read" value="">
+        <input class="input" placeholder="Note (optional): what you saw and where">
+      </div>
+
+      <div class="others"><span class="muted">Other reviewers:</span><span class="chip ok">Ben · confirmed</span></div>
+      <div class="keys"><span><kbd>1</kbd> confirm</span><span><kbd>2</kbd>–<kbd>6</kbd> flag reasons</span>
+        <span><kbd>Enter</kbd> save and next</span><span><kbd>J</kbd>/<kbd>K</kbd> next / previous</span>
+        <span><kbd>O</kbd> open source</span><span><kbd>N</kbd> note</span></div>
+    </div>
+  </div>
+
+  <h2>Saved, with undo (bottom-right in the app)</h2>
+  <div class="card toast"><span class="chip ok">Saved</span><span class="small">Calderon 2022Q3 · flagged as wrong value</span><button class="btn ghost small">Undo</button></div>
+</div>
+<script>
+  const b = document.getElementById('theme');
+  b.onclick = () => {
+    const r = document.documentElement;
+    const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    r.dataset.theme = dark ? 'light' : 'dark';
+  };
+</script>
+</body>
+</html>
