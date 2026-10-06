@@ -21,6 +21,7 @@ named `pharma-analog-uptake-workbench`.
 |---|---|
 | `index.html`, `app.js`, `preview.js`, `export.js`, `style.css`, `config.js` | The app: static files, no build step. `config.js` names the Supabase project. |
 | `scripts/build_rows.py` | Turns gold into `data/rows.json`: every gold row that cites a source (quarterly, annual and companion figures, and the evidence for each exclusion), with a priority tier, reasons, Claude's note and a batch. |
+| `scripts/prefetch_sources.py` | Warms the source cache: fetches every cited document once through the `source` function, paced at 2 per second, skipping what is already cached. |
 | `scripts/pull_verdicts.py` | Snapshots the app's verdicts into the workbench checkout, for its tracker workbook. |
 | `supabase/schema.sql` | Tables, open access rules (no sign-in), a trigger that records the gold figure each reviewer was shown, `load_gold()`, and the progress views. |
 | `supabase/functions/source` | Edge Function that fetches a row's source document for the in-app preview. It serves only URLs some gold row cites. Deploy with JWT verification off. |
