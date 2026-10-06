@@ -137,6 +137,10 @@ section.page { margin-top: 20px; }
 .signin { max-width: 420px; margin: 12vh auto 0; padding: 28px; }
 .signin h1 { font-size: 26px; margin-bottom: 6px; }
 .signin form { display: grid; gap: 10px; margin-top: 18px; }
+.picker { display: grid; gap: 8px; margin-top: 18px; }
+.picker .btn { justify-content: flex-start; }
+.assign { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.assign select { flex: 1; min-width: 0; }
 
 /* Queue */
 .tiers { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
@@ -147,7 +151,7 @@ section.page { margin-top: 20px; }
 .filters { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 18px 0 10px; }
 .filters .input { min-width: 220px; }
 .batches { overflow: hidden; }
-.batch { display: grid; grid-template-columns: 48px minmax(0, 1fr) 190px 170px 80px; gap: 16px; align-items: center;
+.batch { display: grid; grid-template-columns: 48px minmax(0, 1fr) 190px 220px 80px; gap: 16px; align-items: center;
          padding: 12px 18px; border-top: 1px solid var(--border); }
 .batch:first-child { border-top: 0; }
 .batch:hover { background: var(--surface-2); }

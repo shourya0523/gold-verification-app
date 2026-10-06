@@ -3,6 +3,7 @@
 import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.2/+esm";
 import config from "./config.js";
 import { Preview, escapeHtml as esc } from "./preview.js";
+import { buildTracker } from "./export.js";
 
 const VERDICTS = {
   confirmed: { label: "Confirmed", key: "1" },
@@ -22,28 +23,15 @@ const PAGE = 1000; // PostgREST's default row cap per request
 
 // ------------------------------------------------------------------ setup
 
-const db = createClient(config.supabaseUrl, config.supabaseKey,
-  config.accessToken ? { accessToken: async () => config.accessToken } : {});
+// No sign-in: the key reaches everything, and each person picks their name.
+const db = createClient(config.supabaseUrl, config.supabaseKey, { auth: { persistSession: false } });
 const functionsUrl = config.functionsUrl || `${config.supabaseUrl}/functions/v1`;
 
 const state = { me: null, team: [], view: null, cleanup: [] };
 const $app = document.getElementById("app");
 
-async function accessToken() {
-  if (config.accessToken) return config.accessToken;
-  const { data } = await db.auth.getSession();
-  return data.session?.access_token;
-}
 async function functionHeaders() {
-  return { Authorization: `Bearer ${await accessToken()}`, apikey: config.supabaseKey };
-}
-async function currentEmail() {
-  if (config.accessToken) {
-    const payload = JSON.parse(atob(config.accessToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/")));
-    return (payload.email || "").toLowerCase();
-  }
-  const { data } = await db.auth.getSession();
-  return data.session?.user?.email?.toLowerCase() || null;
+  return { apikey: config.supabaseKey };
 }
 
 function store(key, value) {
@@ -102,9 +90,10 @@ function topbar(active) {
     <div class="brand">Gold verification</div>
     <nav class="nav row">${link("queue", "Queue")}${link("flags", "Flags", ' <span class="chip flag" id="flagcount" style="padding:0 7px" hidden></span>')}${link("progress", "Progress")}</nav>
     <div class="spacer"></div>
+    <button class="btn small" id="exportxlsx" title="Download the tracker workbook with every verdict so far">Export Excel</button>
     <button class="btn ghost small" id="theme" title="Switch light / dark">Theme</button>
     <div class="who"><span class="small muted">${esc(me.name)}</span><div class="avatar" title="${esc(me.email)}">${esc(initials(me.name))}</div></div>
-    ${config.accessToken ? "" : '<button class="btn ghost small" id="signout">Sign out</button>'}
+    <button class="btn ghost small" id="switch" title="Not you? Pick another name">Switch</button>
   </header>`;
 }
 
@@ -115,8 +104,8 @@ function wireTopbar() {
     r.dataset.theme = dark ? "light" : "dark";
     try { localStorage.setItem("gv-theme", r.dataset.theme); } catch { /* private window */ }
   };
-  const so = document.getElementById("signout");
-  if (so) so.onclick = async () => { await db.auth.signOut(); location.hash = ""; location.reload(); };
+  document.getElementById("switch").onclick = () => { store("me", null); renderPicker(); };
+  document.getElementById("exportxlsx").onclick = exportExcel;
   db.from("row_status").select("gold_id", { count: "exact", head: true }).eq("status", "flagged")
     .then(({ count }) => {
       const el = document.getElementById("flagcount");
@@ -124,49 +113,20 @@ function wireTopbar() {
     });
 }
 
-// ------------------------------------------------------------------ sign in
+// ------------------------------------------------------------------ who are you
 
-function renderSignIn(message = "") {
+function renderPicker() {
+  state.cleanup.forEach((f) => f()); state.cleanup = [];
   $app.innerHTML = `<div class="card signin">
     <h1>Gold verification</h1>
-    <p class="muted">Sign in with your work email. We'll email you a 6-digit code (and a link).</p>
-    <form id="signin"><input class="input" type="email" name="email" required placeholder="you@company.com" autocomplete="email">
-    <button class="btn primary" type="submit">Email me a code</button></form>
-    <form id="code" hidden><input class="input" name="code" inputmode="numeric" autocomplete="one-time-code"
-      pattern="[0-9]{6,10}" required placeholder="Code from the email">
-    <button class="btn primary" type="submit">Sign in</button></form>
-    <p class="small" id="signinmsg">${message}</p></div>`;
-  const msg = document.getElementById("signinmsg");
-  const codeForm = document.getElementById("code");
-  let email = "";
-  document.getElementById("signin").onsubmit = async (e) => {
-    e.preventDefault();
-    email = new FormData(e.target).get("email").trim().toLowerCase();
-    msg.textContent = "Sending…";
-    const { error } = await db.auth.signInWithOtp({
-      email, options: { emailRedirectTo: location.origin + location.pathname },
-    });
-    if (error) { msg.textContent = `Could not send: ${error.message}`; return; }
-    // A code typed here cannot be used up by a mail scanner that opens links.
-    msg.textContent = `Sent to ${email}. Enter the code from the email, or open its link on this device. Check junk or quarantine if it does not arrive.`;
-    codeForm.hidden = false;
-    codeForm.querySelector("input").focus();
-  };
-  codeForm.onsubmit = async (e) => {
-    e.preventDefault();
-    const token = new FormData(codeForm).get("code").trim();
-    msg.textContent = "Checking…";
-    const { error } = await db.auth.verifyOtp({ email, token, type: "email" });
-    if (error) msg.textContent = `That code did not work: ${error.message}. Request a new one above.`;
-  };
-}
-
-function renderNotMember(email) {
-  $app.innerHTML = `<div class="card signin"><h1>Not on the team list</h1>
-    <p>${esc(email)} is signed in but is not one of the reviewers. Ask the person who runs the
-    verification to add this email, then reload.</p>
-    <button class="btn" id="signout">Sign out</button></div>`;
-  document.getElementById("signout").onclick = async () => { await db.auth.signOut(); location.reload(); };
+    <p class="muted">Who are you? Your verdicts are saved under this name; this browser remembers it.</p>
+    <div class="picker">${state.team.map((m) =>
+      `<button class="btn" data-email="${esc(m.email)}">${esc(m.display_name)}</button>`).join("")}</div></div>`;
+  $app.querySelectorAll("[data-email]").forEach((b) => b.onclick = () => {
+    store("me", b.dataset.email);
+    state.me = { email: b.dataset.email, name: nameOf(b.dataset.email) };
+    route();
+  });
 }
 
 // ------------------------------------------------------------------ queue
@@ -210,7 +170,8 @@ async function renderQueue() {
         <div style="min-width:0"><div class="title" title="${esc(b.title)}">${esc(b.title)}</div>
           <div class="muted small">${b.row_count} rows · ${b.document_count} document${b.document_count === 1 ? "" : "s"}</div></div>
         <div>${bar(b.verified_rows, b.flagged_rows, b.row_count)}<div class="muted small" style="margin-top:4px">${status}</div></div>
-        <select class="input" data-assign="${esc(b.id)}" aria-label="Assignee">${options(b)}</select>
+        <div class="assign">${b.assignee ? "" : `<button class="btn small" data-claim="${esc(b.id)}">Claim</button>`}
+          <select class="input" data-assign="${esc(b.id)}" aria-label="Assignee">${options(b)}</select></div>
         <a class="btn" href="#/batch/${encodeURIComponent(b.id)}">Open</a></div>`;
     };
     const showBtn = (v, label) => `<button class="btn small ${f.show === v ? "on" : ""}" data-show="${v}">${label}</button>`;
@@ -230,14 +191,18 @@ async function renderQueue() {
     q2.oninput = () => { f.q = q2.value; const pos = q2.selectionStart; draw(); const n = section.querySelector("#q"); n.focus(); n.setSelectionRange(pos, pos); };
     const more = section.querySelector("#more");
     if (more) more.onclick = () => { limit += 60; draw(); };
-    section.querySelectorAll("[data-assign]").forEach((sel) => sel.onchange = async () => {
-      const b = batches.find((x) => x.id === sel.dataset.assign);
+    const assign = async (b, email) => {
       try {
-        await must(db.from("batches").update({ assignee: sel.value || null }).eq("id", b.id));
-        b.assignee = sel.value || null;
-        toast(`${esc(b.title)} → ${esc(sel.value ? nameOf(sel.value) : "unassigned")}`);
-      } catch (err) { fail(err); sel.value = b.assignee || ""; }
-    });
+        await must(db.from("batches").update({ assignee: email || null }).eq("id", b.id));
+        b.assignee = email || null;
+        toast(`${esc(b.title)} → ${esc(email ? nameOf(email) : "unassigned")}`);
+      } catch (err) { fail(err); }
+      draw();
+    };
+    section.querySelectorAll("[data-assign]").forEach((sel) => sel.onchange = () =>
+      assign(batches.find((x) => x.id === sel.dataset.assign), sel.value));
+    section.querySelectorAll("[data-claim]").forEach((btn) => btn.onclick = () =>
+      assign(batches.find((x) => x.id === btn.dataset.claim), state.me.email));
   };
   draw();
 }
@@ -567,6 +532,26 @@ async function loadGold(file, msg) {
   }
 }
 
+async function exportExcel() {
+  const btn = document.getElementById("exportxlsx");
+  btn.disabled = true; btn.textContent = "Exporting…";
+  try {
+    const [rows, verdicts, resolutions] = await Promise.all([
+      fetchAll(() => db.from("rows").select("gold_id,kind,tier,drug_name,generic_name,issuer,period,value_reported,currency,scope,derivation,source_url,source_quote,automated_check")
+        .eq("in_current_gold", true).order("gold_id")),
+      fetchAll(() => db.from("verdicts").select("*").order("gold_id").order("reviewer")),
+      fetchAll(() => db.from("resolutions").select("*").order("gold_id")),
+    ]);
+    const blob = await buildTracker({ rows, verdicts, resolutions, nameOf });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `gold-verification-tracker-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.click();
+    toast(`Exported ${fmt(rows.length)} rows and ${fmt(verdicts.length)} verdicts`);
+  } catch (err) { fail(err); }
+  btn.disabled = false; btn.textContent = "Export Excel";
+}
+
 async function exportVerdicts() {
   const verdicts = await fetchAll(() => db.from("verdicts").select("*").order("gold_id").order("reviewer"));
   const resolutions = new Map((await fetchAll(() => db.from("resolutions").select("*").order("gold_id"))).map((r) => [r.gold_id, r]));
@@ -616,20 +601,19 @@ function subscribe() {
 }
 
 async function main() {
-  const email = await currentEmail();
-  if (!email) return renderSignIn();
-  const member = await db.rpc("is_team_member");
-  if (member.error) return renderSignIn(`Could not check membership: ${esc(member.error.message)}`);
-  if (!member.data) return renderNotMember(email);
-  state.team = await must(db.from("team_members").select("*").order("display_name"));
-  state.team = state.team.map((m) => ({ ...m, email: m.email.toLowerCase() }));
-  state.me = { email, name: nameOf(email) };
-  window.addEventListener("hashchange", route);
+  try {
+    state.team = (await must(db.from("team_members").select("*").order("display_name")))
+      .map((m) => ({ ...m, email: m.email.toLowerCase() }));
+  } catch (err) {
+    $app.innerHTML = `<div class="empty">Could not reach the database: ${esc(err.message)}</div>`;
+    return;
+  }
+  window.addEventListener("hashchange", () => { if (state.me) route(); });
   subscribe();
+  const saved = store("me");
+  if (!saved || !state.team.some((m) => m.email === saved)) return renderPicker();
+  state.me = { email: saved, name: nameOf(saved) };
   route();
 }
 
-if (!config.accessToken) {
-  db.auth.onAuthStateChange((event) => { if (event === "SIGNED_IN" && !state.me) main(); });
-}
 main();
