@@ -88,7 +88,9 @@ export function fetchSource(url, { functionsUrl, headers }) {
         try { reason = (await res.json()).error || reason; } catch { /* not json */ }
         throw new Error(reason);
       }
-      const type = (res.headers.get("content-type") || "").toLowerCase();
+      // The function platform relabels HTML as text/plain, so the function
+      // passes the source's own type alongside.
+      const type = (res.headers.get("x-source-content-type") || res.headers.get("content-type") || "").toLowerCase();
       const finalUrl = res.headers.get("x-final-url") || url;
       const bytes = new Uint8Array(await res.arrayBuffer());
       const isPdf = type.includes("pdf") || (bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46);
@@ -96,7 +98,9 @@ export function fetchSource(url, { functionsUrl, headers }) {
       const charset = /charset=([\w-]+)/.exec(type)?.[1] || "utf-8";
       let text;
       try { text = new TextDecoder(charset).decode(bytes); } catch { text = new TextDecoder().decode(bytes); }
-      return { type: type.includes("text/plain") ? "text" : "html", text, finalUrl };
+      const looksHtml = /^\s*(<!doctype html|<html|<\?xml[^>]*>\s*<!doctype html)/i.test(text.slice(0, 2000))
+        || /<(body|table|div)[\s>]/i.test(text.slice(0, 20000));
+      return { type: type.includes("text/plain") && !looksHtml ? "text" : "html", text, finalUrl };
     })();
     cache.set(url, p);
     p.catch(() => cache.delete(url));
