@@ -64,6 +64,8 @@ Then in the app go to **Progress → Gold rows** and choose `data/rows.json`.
       insert into app_config values ('sec_contact', 'Team name contact@company.com')
         on conflict (key) do update set value = excluded.value;
 
+- **Source cache:** the preview function stores each fetched document in the private `source-cache` storage bucket (created by `supabase/schema.sql`, along with the `source_cache` table), so repeat views never go back to SEC. Re-run `schema.sql` and redeploy the function to enable it. To refetch a document, delete its `source_cache` row.
+
 ### The tracker workbook in the workbench
 
 **Export Excel** in the app is the quick way. To fill the workbench's own
