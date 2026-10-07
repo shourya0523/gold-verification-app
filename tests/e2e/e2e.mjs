@@ -173,6 +173,37 @@ try {
   check("progress counts the reviewed rows", /2 of 8,475|2 of/.test(head), head.trim());
   await a.screenshot({ path: `${out}/progress.png`, fullPage: true });
 
+  // 7b. Milestones: Ben closes the smallest batch nobody has touched, with the
+  // 1 key. The last verdict fires the batch note and the confetti; the queue's
+  // Today line and the Progress team strip then count the batch for him.
+  const touched = new Set([result.confirmed, result.flagged, result.undone].filter(Boolean));
+  const small = data.batches.filter((x) => !data.rows.some((r) => r.batch_id === x.id && touched.has(r.gold_id)))
+    .sort((x, y) => x.row_count - y.row_count)[0];
+  const ben = await as("ben");
+  await ben.goto(`${base}/#/batch/${encodeURIComponent(small.id)}`);
+  await ben.waitForSelector("#ring");
+  const sawConfetti = ben.waitForSelector("canvas.confetti", { state: "attached", timeout: 60_000 }).then(() => true, () => false);
+  for (let n = 1; n <= small.row_count; n++) {
+    await ben.keyboard.press("1");
+    await ben.waitForFunction((n) => (document.querySelector("#ring")?.textContent || "").includes(`${n} of`), n, { timeout: 30_000 });
+  }
+  result.finished = { batch: small.id, rows: data.rows.filter((r) => r.batch_id === small.id).map((r) => r.gold_id) };
+  check("closing a batch fires confetti", await sawConfetti, `${small.id}, ${small.row_count} rows`);
+  await ben.waitForSelector("#cheer:not([hidden])");
+  const note = (await ben.textContent("#cheer")).trim();
+  check("closing a batch shows the batch note", /Batch done/.test(note), note);
+  await ben.screenshot({ path: `${out}/milestone.png` });
+  await ben.goto(`${base}/#/queue`);
+  await ben.waitForSelector(".session");
+  const session = (await ben.textContent(".session")).trim();
+  check("the Today line counts the rows and the batch", session.includes(`${small.row_count} row`) && /1 batch done/.test(session), session);
+  await ben.goto(`${base}/#/progress`);
+  await ben.waitForSelector(".team");
+  const strip = (await ben.textContent(".team")).replace(/\s+/g, " ").trim();
+  check("the team strip credits the batch to its closer", /Ben 1 batch finished/.test(strip), strip);
+  const again = await ben.evaluate(() => JSON.parse(localStorage.getItem("gv-cheer-ben@team.test") || "{}"));
+  check("the batch milestone is remembered, so it fires once", Object.keys(again).some((k) => k === `batch:${small.id}`), JSON.stringify(again));
+
   // 8. Preview: one row per source host, read from the real documents.
   const byHost = new Map();
   for (const r of data.rows) {

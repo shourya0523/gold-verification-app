@@ -66,6 +66,13 @@ def main() -> int:
     run = json.loads(RESULT.read_text()) if RESULT.exists() else {}
     verdicts = query("select json_agg(json_build_object('gold_id', gold_id, 'reviewer', reviewer, 'verdict', verdict, "
                      "'seen', gold_value_seen::text, 'gold', (select value_reported::text from rows r where r.gold_id = v.gold_id))) from verdicts v") or []
+    # The batch Ben closes to exercise the milestones is set aside: the checks
+    # below are about the verdicts driven before it.
+    closing = set((run.get("finished") or {}).get("rows", []))
+    closed = [v for v in verdicts if v["gold_id"] in closing and v["reviewer"] == "ben@team.test"]
+    if closing and len(closed) != len(closing):
+        failures.append(f"Ben's batch has {len(closed)} verdicts for {len(closing)} rows")
+    verdicts = [v for v in verdicts if v not in closed]
     by = {(v["gold_id"], v["reviewer"]): v for v in verdicts}
     expect = [((run.get("confirmed"), "asha@team.test"), "confirmed"), ((run.get("flagged"), "asha@team.test"), "wrong_period")]
     for key, verdict in expect:

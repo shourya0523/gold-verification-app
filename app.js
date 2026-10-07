@@ -4,6 +4,8 @@ import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js
 import config from "./config.js";
 import { Preview, escapeHtml as esc } from "./preview.js";
 import { buildTracker } from "./export.js";
+import { PERSONAL_STEPS, batchFinishers, catches, cheer, crossed, remember, shown, teamMilestones, today }
+  from "./cheer.js";
 
 const VERDICTS = {
   confirmed: { label: "Confirmed", key: "1" },
@@ -74,6 +76,16 @@ function bar(ok, flagged, total) {
   return `<div class="bar"><span class="ok" style="width:${pct(ok - flagged, total)}"></span><span class="fl" style="width:${pct(flagged, total)}"></span></div>`;
 }
 
+/** How far a batch is, as a small ring with "n of m" beside it. */
+function ring(done, total) {
+  const c = 2 * Math.PI * 7;
+  const off = total ? c * (1 - done / total) : c;
+  return `<span class="ring small" id="ring" title="Rows in this batch with a verdict from anyone">
+    <svg viewBox="0 0 18 18" aria-hidden="true"><circle class="track" cx="9" cy="9" r="7" fill="none" stroke-width="3"/>
+    <circle class="fill" cx="9" cy="9" r="7" fill="none" stroke-width="3" stroke-dasharray="${c.toFixed(2)}" stroke-dashoffset="${off.toFixed(2)}" stroke-linecap="round"/></svg>
+    <span>${done} of ${total}</span></span>`;
+}
+
 let toastTimer;
 function toast(html, { undo, error } = {}) {
   const el = document.getElementById("toast");
@@ -129,6 +141,8 @@ function renderPicker() {
     store("me", b.dataset.email);
     state.me = { email: b.dataset.email, name: nameOf(b.dataset.email) };
     route();
+    quietly(checkTeam)();
+    quietly(checkCatches)();
   });
 }
 
@@ -138,11 +152,23 @@ async function renderQueue() {
   $app.innerHTML = `${topbar("queue")}<section class="page"><div class="empty"><span class="spinner"></span>Loading batches…</div></section>`;
   wireTopbar();
   const live = current();
-  const [tiers, batches] = await Promise.all([
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  const [tiers, batches, mineToday] = await Promise.all([
     must(db.from("tier_progress").select("*").order("tier")),
     fetchAll(() => db.from("batch_progress").select("*").order("tier").order("issuer").order("id")),
+    fetchAll(() => db.from("verdicts").select("verdict").eq("reviewer", state.me.email)
+      .gte("updated_at", midnight.toISOString()).order("gold_id")),
   ]);
   if (!live()) return;
+  // Today, for you only: rows you gave a verdict, batches you closed, flags you raised.
+  const closedToday = Object.entries(shown(state.me.email) || {})
+    .filter(([k, day]) => k.startsWith("batch:") && day === today()).length;
+  const flagsToday = mineToday.filter((v) => v.verdict !== "confirmed").length;
+  const plural = (n, one, many) => `<b>${fmt(n)}</b> ${n === 1 ? one : many}`;
+  const session = `<div class="session small">Today: ${mineToday.length
+    ? [plural(mineToday.length, "row", "rows"), closedToday ? plural(closedToday, "batch done", "batches done") : "",
+      flagsToday ? plural(flagsToday, "flag", "flags") : ""].filter(Boolean).join(" · ")
+    : "nothing yet"}</div>`;
   const f = Object.assign({ tier: "P1", show: "open", q: "" }, store("queue-filter") || {});
   let limit = 60;
   const selected = new Set();
@@ -184,6 +210,7 @@ async function renderQueue() {
     const showBtn = (v, label) => `<button class="btn small ${f.show === v ? "on" : ""}" data-show="${v}">${label}</button>`;
     section.innerHTML = `
       <div class="tiers">${tiers.map(tierCard).join("")}</div>
+      ${session}
       <div class="filters">
         <button class="btn small ${f.tier === "all" ? "on" : ""}" data-tier="all">All tiers</button>
         ${showBtn("open", "Not finished")}${showBtn("mine", "Mine")}${showBtn("unassigned", "Unassigned")}${showBtn("flagged", "Has flags")}${showBtn("all", "Everything")}
@@ -266,18 +293,22 @@ async function renderBatch(batchId, wanted) {
     for (const v of list) (verdicts.get(v.gold_id) || verdicts.set(v.gold_id, []).get(v.gold_id)).push(v);
   };
   await loadVerdicts();
+  // Your verdicts across all of gold, for the round-number milestones.
+  let myCount = await must(db.from("verdicts").select("gold_id", { count: "exact", head: true })
+    .eq("reviewer", state.me.email));
   if (!live()) return;
   const mine = (r) => (verdicts.get(r.gold_id) || []).find((v) => v.reviewer === state.me.email);
+  const teamDone = () => rows.filter((r) => (verdicts.get(r.gold_id) || []).length).length;
 
   let index = rows.findIndex((r) => r.gold_id === wanted);
   if (index < 0) index = Math.max(0, rows.findIndex((r) => !mine(r)));
   let pending = null; // flag reason chosen but not saved
   // A derived total is printed in no document, so the preview shows one of its
   // inputs instead: first the one the row's own document prints.
-  let shown = 0;
+  let inputShown = 0;
   const firstInput = (r) => Math.max(0, (r.inputs || []).findIndex((i) => i.source_url === r.source_url));
   const previewRow = (r) => {
-    const input = (r.inputs || [])[shown];
+    const input = (r.inputs || [])[inputShown];
     return input ? { ...r, source_url: input.source_url, value_reported: input.value,
       source_value_reported: input.value, source_unit: "millions", source_quote: "" } : r;
   };
@@ -337,22 +368,44 @@ async function renderBatch(batchId, wanted) {
     const before = mine(row);
     const payload = { gold_id: row.gold_id, reviewer: state.me.email, verdict, value_seen: valueSeen, note,
       gold_value_seen: row.value_reported };
+    const wasDone = teamDone() === rows.length;
     try {
       await must(db.from("verdicts").upsert(payload, { onConflict: "gold_id,reviewer" }));
     } catch (err) { fail(err); return false; }
     await loadVerdicts();
+    if (!before) celebrate(wasDone, myCount, ++myCount);
     const label = `${esc(row.drug_name)} ${esc(row.period)} · ${VERDICTS[verdict].label.toLowerCase()}`;
     toast(label, {
       undo: async () => {
         try {
           if (before) await must(db.from("verdicts").upsert({ ...before }, { onConflict: "gold_id,reviewer" }));
-          else await must(db.from("verdicts").delete().eq("gold_id", row.gold_id).eq("reviewer", state.me.email));
+          else {
+            await must(db.from("verdicts").delete().eq("gold_id", row.gold_id).eq("reviewer", state.me.email));
+            myCount -= 1;
+          }
           await loadVerdicts();
           go(rows.indexOf(row));
         } catch (err) { fail(err); }
       },
     });
     return true;
+  }
+
+  // A batch you close, and a round number of your own verdicts, each once.
+  function celebrate(wasDone, before, after) {
+    const seen = shown(state.me.email) || {};
+    const lines = [];
+    const batchKey = `batch:${batch.id}`;
+    if (!wasDone && teamDone() === rows.length && !seen[batchKey]) {
+      lines.push(`Batch done: <b>${esc(batch.title)}</b> · ${rows.length} row${rows.length === 1 ? "" : "s"}`);
+      remember(state.me.email, [batchKey]);
+    }
+    const step = crossed(PERSONAL_STEPS, before, after);
+    if (step && !seen[`me:${step}`]) {
+      lines.push(`Your ${fmt(step)}th verdict`);
+      remember(state.me.email, [`me:${step}`]);
+    }
+    if (lines.length) cheer(lines.join(" · "), { from: section.querySelector("#ring") });
   }
 
   async function saveFlag() {
@@ -366,7 +419,7 @@ async function renderBatch(batchId, wanted) {
 
   function draw(rowChanged = false) {
     const r = rows[index];
-    if (rowChanged) shown = firstInput(r);
+    if (rowChanged) inputShown = firstInput(r);
     const own = mine(r);
     const others = (verdicts.get(r.gold_id) || []).filter((v) => v.reviewer !== state.me.email);
     const exclusion = r.kind === "exclusion";
@@ -379,7 +432,7 @@ async function renderBatch(batchId, wanted) {
       <div class="crumbs"><a href="#/queue">← Queue</a><span class="muted">/</span>
         <select class="input" id="jump" aria-label="Row">${rows.map((x, i) =>
           `<option value="${i}" ${i === index ? "selected" : ""}>${statusMark(x)} ${esc(x.drug_name)} ${esc(x.period)}${x.value_reported === null ? "" : ` · ${fmt(x.value_reported)}`}</option>`).join("")}</select>
-        <span class="muted small">${reviewed} of ${rows.length} done by you</span></div>
+        ${ring(teamDone(), rows.length)}<span class="muted small">· ${reviewed} by you</span></div>
       <div class="head"><div style="min-width:0">
           <div class="drug">${esc(r.drug_name)}</div>
           <div class="meta">${[r.generic_name, r.issuer, r.period || null, r.scope].filter(Boolean).map(esc).join(" · ")}</div></div></div>
@@ -390,7 +443,7 @@ async function renderBatch(batchId, wanted) {
           <span class="usd">${r.source_unit && r.source_unit !== "millions" ? `Printed as ${fmt(r.source_value_reported)} ${esc(r.source_unit)} · ` : ""}${r.derivation.startsWith("direct") ? esc(r.derivation.replace(/_/g, " ")) : `Derived: ${esc(r.derivation.replace(/_/g, " "))}`}${r.currency !== "USD" && r.value_usd_millions !== null ? ` · ≈ ${fmt(r.value_usd_millions, 1)} USD m` : ""}</span></div>`}
       <div class="quote">${esc(r.source_quote)}</div>
       ${(r.inputs || []).length ? `<div class="inputs"><span class="muted small">Not printed: ${r.inputs.map((i) => fmt(i.value)).join(" + ")} = ${fmt(r.value_reported)}. Check each part:</span>
-        ${r.inputs.map((i, n) => `<button class="btn ghost small ${n === shown ? "on" : ""}" data-input="${n}">${fmt(i.value)} · ${esc(i.label)} · ${esc(host(i.source_url))}</button>`).join("")}</div>` : ""}
+        ${r.inputs.map((i, n) => `<button class="btn ghost small ${n === inputShown ? "on" : ""}" data-input="${n}">${fmt(i.value)} · ${esc(i.label)} · ${esc(host(i.source_url))}</button>`).join("")}</div>` : ""}
       <div class="srcrow"><a class="btn small" href="${esc(openUrl(previewRow(r)))}" target="gv-source" rel="noopener">Open source ↗ <kbd>O</kbd></a>
         <button class="btn ghost small" id="copyq">Copy quote</button>
         <span class="host">${esc(host(r.source_url))}</span><span class="spacer"></span>
@@ -435,7 +488,7 @@ async function renderBatch(batchId, wanted) {
     card.querySelector("#saveflag").onclick = saveFlag;
     card.querySelector("#cancelflag").onclick = () => { pending = null; draw(); };
     card.querySelectorAll("[data-input]").forEach((b) => b.onclick = () => {
-      shown = Number(b.dataset.input);
+      inputShown = Number(b.dataset.input);
       find.value = ""; preview.findQuery = null; preview.show(previewRow(r)); draw();
     });
     section.querySelector("#pvopen").href = openUrl(previewRow(r));
@@ -536,12 +589,14 @@ async function renderProgress() {
   $app.innerHTML = `${topbar("progress")}<section class="page"><div class="empty"><span class="spinner"></span>Loading…</div></section>`;
   wireTopbar();
   const live = current();
-  const [tiers, people, kinds, currentRows, build] = await Promise.all([
+  const [tiers, people, kinds, currentRows, build, allVerdicts, resolved] = await Promise.all([
     must(db.from("tier_progress").select("*").order("tier")),
-    must(db.from("reviewer_progress").select("*").order("verdicts", { ascending: false })),
-    fetchAll(() => db.from("row_status").select("kind,status").order("gold_id")),
+    must(db.from("reviewer_progress").select("*").order("display_name")),
+    fetchAll(() => db.from("row_status").select("gold_id,batch_id,kind,status").order("gold_id")),
     must(db.from("rows").select("gold_id", { count: "exact", head: true }).eq("in_current_gold", true)),
     must(db.from("rows").select("gold_build,loaded_at").eq("in_current_gold", true).order("loaded_at", { ascending: false }).limit(1)),
+    fetchAll(() => db.from("verdicts").select("gold_id,reviewer,verdict,created_at").order("gold_id").order("reviewer")),
+    fetchAll(() => db.from("resolutions").select("gold_id,outcome").order("gold_id")),
   ]);
   if (!live()) return;
   const byKind = {};
@@ -551,9 +606,20 @@ async function renderProgress() {
   }
   const total = tiers.reduce((a, t) => a + t.rows, 0);
   const done = tiers.reduce((a, t) => a + t.verified_rows, 0);
+  // The team, alphabetically: batches each person closed and flags of theirs
+  // that led to a gold fix. Finished work, not volume, and no ranking.
+  const finished = {};
+  for (const who of batchFinishers(kinds, allVerdicts).values()) finished[who] = (finished[who] || 0) + 1;
+  const caught = {};
+  for (const c of catches(resolved, allVerdicts)) caught[c.reviewer] = (caught[c.reviewer] || 0) + 1;
   const section = $app.querySelector("section.page");
   section.innerHTML = `<div class="pagehead"><h1>Progress</h1><span class="muted">${fmt(done)} of ${fmt(total)} rows reviewed (${pct(done, total)})</span></div>
-    <div class="grid2">
+    <div class="card panel"><h3>Gold reviewed, together</h3>
+      <div class="small muted" style="margin-bottom:6px">${fmt(done)} of ${fmt(total)} rows</div>${bar(done, 0, total)}
+      <div class="team">${state.team.map((m) => `<div><div class="who"><div class="avatar">${esc(initials(m.display_name))}</div><b>${esc(m.display_name)}</b></div>
+        <div class="stat">${fmt(finished[m.email] || 0)} batch${finished[m.email] === 1 ? "" : "es"} finished · ${fmt(caught[m.email] || 0)} catch${caught[m.email] === 1 ? "" : "es"}</div></div>`).join("")}</div>
+      <div class="small muted" style="margin-top:10px">A batch counts for whoever gave its last unreviewed row a verdict. A catch is a flag that led to a gold fix.</div></div>
+    <div class="grid2" style="margin-top:16px">
       <div class="card panel"><h3>By tier</h3><table class="plain"><tr><th>Tier</th><th class="n">Rows</th><th class="n">Reviewed</th><th class="n">Flagged</th><th style="width:40%"></th></tr>
         ${tiers.map((t) => `<tr><td>${tierChip(t.tier)}</td><td class="n">${fmt(t.rows)}</td><td class="n">${fmt(t.verified_rows)}</td><td class="n">${fmt(t.flagged_rows)}</td><td>${bar(t.verified_rows, t.flagged_rows, t.rows)}</td></tr>`).join("")}</table></div>
       <div class="card panel"><h3>By kind of row</h3><table class="plain"><tr><th>Kind</th><th class="n">Rows</th><th class="n">Reviewed</th><th class="n">Flagged</th></tr>
@@ -650,12 +716,56 @@ async function route() {
   }
 }
 
+// ------------------------------------------------------------------ milestones
+
+/**
+ * Team milestones (a tier fully reviewed; 25/50/75/100% of gold), shown to
+ * everyone once, whoever closed them. A first visit records what is already
+ * reached without announcing it, so nobody is greeted by old news.
+ */
+async function checkTeam() {
+  if (!state.me) return;
+  const tiers = await must(db.from("tier_progress").select("*"));
+  const reached = teamMilestones(tiers);
+  const seen = shown(state.me.email);
+  if (!seen) { remember(state.me.email, reached.map((m) => m.key)); return; }
+  const fresh = reached.filter((m) => !seen[m.key]);
+  if (!fresh.length) return;
+  remember(state.me.email, fresh.map((m) => m.key));
+  cheer(`${fresh.map((m) => esc(m.text)).join(" · ")} 🎉`);
+}
+
+/** Your flags that a resolution found to be real: a quiet note, once each. */
+async function checkCatches() {
+  if (!state.me) return;
+  const fixed = await fetchAll(() => db.from("resolutions").select("gold_id,outcome")
+    .eq("outcome", "gold_needs_fix").order("gold_id"));
+  if (!fixed.length) return;
+  const ids = fixed.map((r) => r.gold_id);
+  const mineFlags = await must(db.from("verdicts").select("gold_id,reviewer,verdict")
+    .eq("reviewer", state.me.email).in("gold_id", ids));
+  const seen = shown(state.me.email) || {};
+  const fresh = catches(fixed, mineFlags).filter((c) => !seen[`catch:${c.gold_id}`]);
+  if (!fresh.length) return;
+  const rows = await must(db.from("rows").select("gold_id,drug_name,period").in("gold_id", fresh.map((c) => c.gold_id)));
+  remember(state.me.email, fresh.map((c) => `catch:${c.gold_id}`));
+  const names = rows.map((r) => `${esc(r.drug_name)} ${esc(r.period)}`);
+  cheer(fresh.length === 1
+    ? `Good catch: your flag on <b>${names[0]}</b> led to a gold fix ✓`
+    : `Good catches: your flags on <b>${names.join(", ")}</b> led to gold fixes ✓`, { burst: false });
+}
+
+const quietly = (check) => () => check().catch((err) => console.warn("milestone check", err));
+
 function subscribe() {
   try {
     let timer;
+    const later = { verdicts: null, resolutions: null };
+    const follow = { verdicts: quietly(checkTeam), resolutions: quietly(checkCatches) };
     const channel = db.channel("gold-verification");
     for (const table of ["verdicts", "batches", "resolutions"]) {
       channel.on("postgres_changes", { event: "*", schema: "public", table }, (p) => {
+        if (follow[table]) { clearTimeout(later[table]); later[table] = setTimeout(follow[table], 2000); }
         if (state.onChange) return state.onChange(table, p.new || p.old);
         if (location.hash.startsWith("#/batch")) return;
         clearTimeout(timer);
@@ -680,6 +790,8 @@ async function main() {
   if (!saved || !state.team.some((m) => m.email === saved)) return renderPicker();
   state.me = { email: saved, name: nameOf(saved) };
   route();
+  quietly(checkTeam)();
+  quietly(checkCatches)();
 }
 
 main();
