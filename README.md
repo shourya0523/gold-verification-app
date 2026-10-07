@@ -23,7 +23,7 @@ named `pharma-analog-uptake-workbench`.
 | `scripts/build_rows.py` | Turns gold into `data/rows.json`: every gold row that cites a source (quarterly, annual and companion figures, and the evidence for each exclusion), with a priority tier, reasons, Claude's note and a batch. |
 | `scripts/pull_verdicts.py` | Snapshots the app's verdicts into the workbench checkout, for its tracker workbook. |
 | `supabase/schema.sql` | Tables, open access rules (no sign-in), a trigger that records the gold figure each reviewer was shown, `load_gold()`, and the progress views. |
-| `supabase/functions/source` | Edge Function that fetches a row's source document for the in-app preview. It serves only URLs some gold row cites. Deploy with JWT verification off. |
+| `supabase/functions/source` | Edge Function that fetches a row's source document for the in-app preview. It serves only URLs some gold row cites, and keeps each document it fetches (gzipped, in the private `sources` storage bucket, listed in `source_cache`) so a document is fetched from its source once. Deploy with JWT verification off. |
 | `tests/` | `test_build_rows.py` (every sourced gold row is served once, unchanged), `test_pull_verdicts.py`, and `e2e/` (the whole app against a local stand-in for Supabase). |
 | `docs/design-specimen.html` | The design language the app was built to. |
 

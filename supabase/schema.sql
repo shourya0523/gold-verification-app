@@ -103,6 +103,22 @@ create table if not exists app_config (
 alter table app_config enable row level security;
 revoke all on app_config from anon, authenticated;
 
+-- Source documents the preview function has fetched, each kept gzipped in the
+-- private `sources` storage bucket at `path`; written and read only by that
+-- function (service role) and by scripts/warm_sources.py.
+create table if not exists source_cache (
+  url          text primary key,
+  path         text not null,
+  content_type text not null default '',
+  final_url    text not null,
+  bytes        bigint not null,
+  fetched_at   timestamptz not null default now()
+);
+alter table source_cache enable row level security;
+revoke all on source_cache from anon, authenticated;
+insert into storage.buckets (id, name, public) values ('sources', 'sources', false)
+on conflict (id) do nothing;
+
 -- A verdict records which gold figure the reviewer was shown, whatever the
 -- client sent, and when it was last changed.
 create or replace function verdict_stamp() returns trigger

@@ -23,3 +23,9 @@ alter default privileges in schema public grant all on tables to anon, authentic
 alter default privileges in schema public grant all on sequences to anon, authenticated, service_role;
 alter default privileges in schema public grant execute on functions to anon, authenticated, service_role;
 create publication supabase_realtime;
+-- Storage's bucket table, for the bucket schema.sql declares. There is no
+-- storage API here: the preview function's cache writes fail and it serves
+-- each document straight from its source, which is its behaviour when caching
+-- fails in production.
+create schema storage;
+create table storage.buckets (id text primary key, name text not null, public boolean default false);
