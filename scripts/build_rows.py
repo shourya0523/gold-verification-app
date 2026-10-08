@@ -25,6 +25,8 @@ import json
 import os
 import re
 from collections import defaultdict
+from decimal import Decimal
+from itertools import combinations
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -117,15 +119,17 @@ def note_for(row: dict, reasons: list[str], context: dict) -> tuple[str, str]:
     text = f"{row['source_quote']} {row.get('gold_notes') or ''}".lower()
     derivation = row["derivation"]
 
-    inputs = inputs_of(row)
+    inputs = inputs_of(row, context.get("earlier"), context.get("later"))
     if inputs:
-        terms = " + ".join(f"{i['value']:,g}" for i in inputs)
-        parts = "; ".join(f"{i['value']:,g} ({i['label']}, {urlparse(i['source_url']).netloc})" for i in inputs)
+        terms = " ".join(f"{'' if n == 0 else '+ ' if i['op'] == '+' else '− '}{i['value']:,g}"
+                         for n, i in enumerate(inputs))
+        result = row.get("source_value_reported")
+        result = row["value_reported"] if result is None else result
         notes.append(
-            f"Not printed anywhere: this quarter is {DERIVATION_TEXT[derivation]}, "
-            f"{terms} = "
-            f"{row['value_reported']:,g}. Check each part in its own document: {parts}. "
-            "A matching total elsewhere in the table is another column, not this quarter."
+            f"Not printed anywhere: this quarter is {DERIVATION_TEXT[derivation]}, {terms} = {result:,g}. "
+            "Check each term in its own document (the terms above the quote open them), and that they "
+            "are the same line and scope. A figure equal to the result elsewhere in a table is another "
+            "column, not this quarter."
         )
     elif derivation in DERIVATION_TEXT:
         urls = [u for u in re.findall(r"https?://[^\s,;)'\"]+", row.get("gold_notes") or "")
@@ -192,7 +196,10 @@ def note_for(row: dict, reasons: list[str], context: dict) -> tuple[str, str]:
         notes.append("This site refuses automated clients; open it in a normal browser.")
 
     label = context.get("row_label") or row["drug_name"]
-    if derivation in DERIVATION_TEXT:
+    if inputs:
+        suggestion = ("Step through the terms with [ and ]: each opens its document with the figure "
+                      "marked. Check each one; the app checks that they add up.")
+    elif derivation in DERIVATION_TEXT:
         suggestion = f"Recompute {row['value_reported']:,g} from the inputs in the quote."
     else:
         column = "prior-year" if derivation == "direct_prior_year_column" else row["period"]
@@ -242,27 +249,136 @@ def peak_inputs() -> dict[str, str]:
     return out
 
 
-def inputs_of(row: dict) -> list[dict]:
-    """The figures a derived row is built from, each with the document that prints
-    it, where the row records them as data (an acquisition bridge's part-quarters).
+# Numbers as quotes print them: grouped thousands, decimals, bare integers.
+NUMBER = re.compile(r"(?<![\w.,])\d{1,3}(?:,\d{3})+(?:\.\d+)?(?![\d])|(?<![\w.,])\d+(?:\.\d+)?(?![\d])")
+# What the first and later terms of a subtraction are, by derivation.
+SUBTRACTIVE = {
+    "annual_less_reported_first_nine_months": ("Full year", "First nine months"),
+    "full_year_less_other_reported_quarters": ("Full year", "Rest of the year"),
+    "year_to_date_less_reported_quarters": ("Year to date", "Earlier in the year"),
+}
 
-    The derived total is printed in neither document, so the preview looks for
-    these instead: a search for the total can only find some other figure that
-    happens to equal it.
+
+def quoted_numbers(quote: str) -> list[Decimal]:
+    """The numbers a quote prints, years left out."""
+    out = []
+    for match in NUMBER.finditer(quote):
+        text = match.group(0)
+        if re.fullmatch(r"(19|20)\d\d", text):
+            continue
+        out.append(Decimal(text.replace(",", "")))
+    return out
+
+
+def decimals(value: Decimal) -> int:
+    return max(0, -value.as_tuple().exponent)
+
+
+def subtraction(quote: str, result: Decimal) -> tuple[Decimal, list[Decimal]] | None:
+    """The way the quote's numbers make `result` as a minus b (minus c ...):
+    the closest fit, then the fewest terms, within the rounding the printed
+    figures allow. None when nothing fits or the best fit is not unique."""
+    numbers = sorted(set(quoted_numbers(quote)) - {result}, reverse=True)
+    fits = []
+    for i, first in enumerate(numbers):
+        for size in (1, 2, 3):
+            for combo in combinations(numbers[i + 1:], size):
+                places = max(decimals(n) for n in (first, *combo, result))
+                slack = Decimal(1).scaleb(-places) * Decimal("0.5") * (size + 1)
+                miss = abs(first - sum(combo) - result)
+                if miss <= slack:
+                    fits.append((miss, size, first, combo))
+    if not fits:
+        return None
+    fits.sort(key=lambda f: (f[0], f[1]))
+    if len(fits) > 1 and fits[1][:2] == fits[0][:2]:
+        return None
+    _, _, first, combo = fits[0]
+    return first, list(combo)
+
+
+def printed_in(value: Decimal, earlier: list[dict], later: list[dict] = ()) -> tuple[dict, bool] | None:
+    """The earlier quarter whose report prints `value`: one whose own figure it
+    is, else the last of a run of consecutive earlier quarters it is the sum of
+    (a year-to-date figure is printed in the report for its last quarter),
+    else a later quarter whose own figure it is (a fiscal year can be closed
+    by subtracting the quarter after this one). earlier runs newest first.
+    Returns (row, matched), or the previous quarter unmatched when nothing fits."""
+    if not earlier and not later:
+        return None
+    figure = lambda r: Decimal(str(r.get("source_value_reported") if r.get("source_value_reported") is not None
+                                   else r.get("value_reported") or 0))
+    for end in range(len(earlier)):
+        total = Decimal(0)
+        for start in range(end, len(earlier)):
+            total += figure(earlier[start])
+            places = max(decimals(value), *(decimals(figure(r)) for r in earlier[end:start + 1]))
+            slack = Decimal(1).scaleb(-places) * Decimal("0.5") * (start - end + 2)
+            if abs(total - value) <= slack:
+                return earlier[end], True
+    for row in later:
+        if abs(figure(row) - value) <= Decimal(1).scaleb(-max(decimals(value), decimals(figure(row)))):
+            return row, True
+    return (earlier[0], False) if earlier else None
+
+
+def inputs_of(row: dict, earlier: list[dict] | None = None, later: list[dict] | None = None) -> list[dict]:
+    """The figures a derived row is built from, each with the document that
+    prints it: [{op, value, label, source_url, where}], op "+" or "-".
+
+    An acquisition bridge records its parts as data. A quarter derived by
+    subtraction has its terms read from its own quote, kept only when exactly
+    one choice of the quote's numbers reproduces the figure; the first term is
+    in the row's own document, and each later one in the earlier quarter's
+    report that prints it (see printed_in). Empty when neither applies.
+
+    The derived figure itself is printed in none of these documents, so the
+    preview looks for the terms instead: a search for the result can only find
+    some other figure that happens to equal it.
     """
     out = []
     for part in row.get("bridge_components") or []:
         start, _, end = (part.get("covers") or "").partition("/")
         out.append({
+            "op": "+",
             "value": part["value"],
             "source_url": part["source_url"],
             "label": f"{part.get('issuer') or 'issuer'}, {start} to {end}" if end else part.get("issuer") or "",
+            "where": urlparse(part["source_url"]).netloc.removeprefix("www."),
         })
+    if out or row.get("derivation") not in SUBTRACTIVE:
+        return out
+    result = row.get("source_value_reported")
+    if result is None:
+        result = row.get("value_reported")
+    if result is None:
+        return []
+    found = subtraction(row.get("source_quote") or "", Decimal(str(result)))
+    if not found:
+        return []
+    first, rest = found
+    first_label, rest_label = SUBTRACTIVE[row["derivation"]]
+    host = lambda url: urlparse(url).netloc.removeprefix("www.")
+    out.append({"op": "+", "value": float(first), "label": first_label, "source_url": row["source_url"],
+                "where": f"this row's document, {host(row['source_url'])}"})
+    for value in rest:
+        doc = printed_in(value, earlier or [], later or [])
+        if doc:
+            prior, matched = doc
+            where = f"{'' if matched else 'probably '}the {prior['period']} report, {host(prior['source_url'])}"
+            url = prior["source_url"]
+        else:
+            # No earlier quarter in gold to point to: searched for in this
+            # row's own document, and said so.
+            where, url = f"an earlier report gold does not cite; searching this row's document", row["source_url"]
+        out.append({"op": "-", "value": float(value), "label": rest_label if len(rest) == 1 else "Reported earlier",
+                    "source_url": url, "where": where})
     return out
 
 
 def figure_row(row: dict, kind: str, tier: str, reasons: list[str], note: str, suggestion: str,
-               automated: str = "none", checked: bool = False) -> dict:
+               automated: str = "none", checked: bool = False, earlier: list[dict] | None = None,
+               later: list[dict] | None = None) -> dict:
     period = row.get("period") or ""
     return {
         "gold_id": row["gold_id"],
@@ -285,7 +401,7 @@ def figure_row(row: dict, kind: str, tier: str, reasons: list[str], note: str, s
         "line_label": row.get("line_label") or row["drug_name"],
         "source_url": row["source_url"],
         "source_quote": row.get("source_quote") or "",
-        "inputs": inputs_of(row),
+        "inputs": inputs_of(row, earlier, later),
         "automated_check": automated,
         "claude_checked": checked,
         "claude_note": note,
@@ -312,6 +428,23 @@ def build() -> dict:
         series.sort(key=lambda item: item[1].get("period") or "")
         drug = series[0][1]["drug_name"]
         for index, (_, row) in enumerate(series):
+            # The three quarters before this one in the same series, newest
+            # first and stopping at a gap: where a derived quarter's earlier
+            # terms are printed.
+            earlier: list[dict] = []
+            later: list[dict] = []
+            if kind in ("quarterly", "companion") and re.fullmatch(r"\d{4}Q[1-4]", row.get("period") or ""):
+                same = {quarter_index(r["period"]): r for _, r in series
+                        if r.get("benchmark_identity") == row.get("benchmark_identity")
+                        and re.fullmatch(r"\d{4}Q[1-4]", r.get("period") or "")}
+                at = quarter_index(row["period"]) - 1
+                while at in same and len(earlier) < 3:
+                    earlier.append(same[at])
+                    at -= 1
+                at = quarter_index(row["period"]) + 1
+                while at in same and len(later) < 3:
+                    later.append(same[at])
+                    at += 1
             reasons: list[str] = []
             if kind == "exclusion":
                 reasons.append("exclusion: " + (row.get("reason_code") or "no figures").replace("_", " "))
@@ -371,9 +504,10 @@ def build() -> dict:
                 suggestion = suggestion.replace(row["period"] + "Q4", row["period"])
             else:
                 note, suggestion = note_for(row, reasons, {"current_owner": owner,
-                                                           "row_label": row.get("line_label")})
+                                                           "row_label": row.get("line_label"),
+                                                           "earlier": earlier, "later": later})
             rows.append(figure_row(
-                row, kind, tier, reasons, note, suggestion,
+                row, kind, tier, reasons, note, suggestion, earlier=earlier, later=later,
                 automated="fail" if automated.get(row["period"]) is False
                 else "pass" if row["period"] in automated else "none",
                 checked=row["period"] in set(entry.get("hand_checked", [])),

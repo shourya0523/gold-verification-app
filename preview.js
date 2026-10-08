@@ -100,7 +100,10 @@ export function fetchSource(url, { functionsUrl, headers }) {
       try { text = new TextDecoder(charset).decode(bytes); } catch { text = new TextDecoder().decode(bytes); }
       const looksHtml = /^\s*(<!doctype html|<html|<\?xml[^>]*>\s*<!doctype html)/i.test(text.slice(0, 2000))
         || /<(body|table|div)[\s>]/i.test(text.slice(0, 20000));
-      return { type: type.includes("text/plain") && !looksHtml ? "text" : "html", text, finalUrl };
+      // EDGAR's .txt filings are plain text that happens to hold SGML tags
+      // (<TABLE>, <S>, <C>); read as HTML they lose their columns.
+      const plainFile = /\.txt($|\?)/i.test(finalUrl) || /\.txt($|\?)/i.test(url);
+      return { type: plainFile || (type.includes("text/plain") && !looksHtml) ? "text" : "html", text, finalUrl };
     })();
     cache.set(url, p);
     p.catch(() => cache.delete(url));
@@ -358,8 +361,11 @@ export class Preview {
     iframe.setAttribute("sandbox", "allow-same-origin allow-popups allow-popups-to-escape-sandbox");
     iframe.setAttribute("referrerpolicy", "no-referrer");
     iframe.title = "Source document";
+    // Plain text keeps its columns, one block per line, so a figure is found
+    // on the line that names the product.
     const html = doc.type === "text"
-      ? `<pre style="white-space:pre-wrap;font:13px/1.5 monospace">${escapeHtml(doc.text)}</pre>`
+      ? `<pre style="white-space:pre;font:12.5px/1.45 monospace;margin:12px">${doc.text.split(/\r?\n/)
+        .map((line) => `<div>${escapeHtml(line) || " "}</div>`).join("")}</pre>`
       : doc.text;
     iframe.srcdoc = stripActive(html, doc.finalUrl);
     this.host.replaceChildren(iframe);

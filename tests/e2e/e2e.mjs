@@ -250,16 +250,34 @@ try {
     check("a figure in a collapsed section is revealed", !!seen?.visible, `${collapsed.gold_id}: ${JSON.stringify(seen)} · ${(await a.textContent("#pvstatus")).trim()}`);
   }
 
-  // 8c. A derived total is printed nowhere: each part is found in its own document.
-  for (const r of data.rows.filter((x) => x.inputs.length)) {
+  // 8c. A derived total is printed nowhere: each term is shown with its own
+  // document, the sum says it adds up, and [ ] step through the terms. Bridge
+  // parts must be found; for a sample of subtracted quarters (one per kind of
+  // derivation, plus a 3-term one) how each term fared is recorded.
+  const bridges = data.rows.filter((x) => x.derivation === "acquisition_bridge_sum");
+  const kinds = new Map();
+  for (const x of data.rows) if (x.inputs.length && x.derivation !== "acquisition_bridge_sum") {
+    const k = x.inputs.length > 2 ? "3+" : x.derivation;
+    if (!kinds.has(k)) kinds.set(k, x);
+  }
+  result.derived = [];
+  for (const r of [...bridges, ...kinds.values()]) {
     await a.goto(`${base}/#/batch/${encodeURIComponent(r.batch_id)}/${encodeURIComponent(r.gold_id)}`);
+    await a.waitForSelector(".sum");
+    const sum = (await a.textContent(".sum .check")).trim();
+    check(`the worked sum for ${r.gold_id} adds up`, /adds up/.test(sum), sum);
     for (let n = 0; n < r.inputs.length; n++) {
-      await a.click(`[data-input="${n}"]`);
-      await a.waitForFunction(() => !/Loading|Looking/.test(document.querySelector("#pvstatus").textContent), null, { timeout: 90_000 });
+      if (n === 0) await a.click('[data-input="0"]'); else await a.keyboard.press("]");
+      await a.waitForFunction((n) => (document.querySelector('.sum .term.on')?.dataset.input === String(n)
+        && /^Term/.test(document.querySelector("#pvstatus").textContent)
+        && !/Loading|Looking/.test(document.querySelector("#pvstatus").textContent)), n, { timeout: 90_000 });
       const status = (await a.textContent("#pvstatus")).trim();
-      const marked = await a.$$eval("#pv .pv-hl.fig, #pv .hl.fig, #pv [class*=fig]", (els) => els.length);
-      check(`bridge part ${r.inputs[n].value} of ${r.gold_id} is found`, /found/i.test(status) && !/not found/i.test(status), `${status}; ${marked} marks`);
+      const found = /found/i.test(status) && !/not found/i.test(status);
+      result.derived.push({ gold_id: r.gold_id, term: n, value: r.inputs[n].value, where: r.inputs[n].where, status });
+      if (r.derivation === "acquisition_bridge_sum") check(`bridge part ${r.inputs[n].value} of ${r.gold_id} is found`, found, status);
+      else console.log(`term   ${r.gold_id} ${n + 1}/${r.inputs.length} ${r.inputs[n].value} (${r.inputs[n].where}): ${status}`);
     }
+    if (r === [...kinds.values()][0]) await a.screenshot({ path: `${out}/derived.png` });
   }
 
   // Phone width: the review page must not scroll sideways.

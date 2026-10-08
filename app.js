@@ -76,6 +76,31 @@ function bar(ok, flagged, total) {
   return `<div class="bar"><span class="ok" style="width:${pct(ok - flagged, total)}"></span><span class="fl" style="width:${pct(flagged, total)}"></span></div>`;
 }
 
+/** The figures a derived quarter is made of, as a sum to work through: one
+ * line per term with the document it comes from (clicking one opens it), then
+ * the result, and whether the terms really make it. */
+function workedSum(r, active) {
+  const result = r.source_value_reported ?? r.value_reported;
+  const places = (v) => (String(v).split(".")[1] || "").length;
+  const most = Math.max(places(result), ...r.inputs.map((i) => places(i.value)));
+  const total = r.inputs.reduce((a, i) => a + (i.op === "-" ? -1 : 1) * Number(i.value), 0);
+  const miss = Math.abs(total - result);
+  // Each printed figure is rounded, so terms may miss by half a unit apiece.
+  const ok = miss <= 0.5 * 10 ** -most * (r.inputs.length + 1) + 1e-9;
+  const unit = r.source_unit && r.source_unit !== "millions" ? r.source_unit : "millions";
+  return `<div class="sum" role="group" aria-label="How this quarter is derived">
+    ${r.inputs.map((i, n) => `<button class="term ${n === active ? "on" : ""}" data-input="${n}" aria-pressed="${n === active}">
+      <span class="op">${n === 0 ? "" : i.op === "-" ? "−" : "+"}</span>
+      <span class="what">${esc(i.label)}<span class="where">${esc(i.where || host(i.source_url))}</span></span>
+      <span class="v">${fmt(i.value)}</span>
+      <span class="show">${n === active ? "showing" : "show"}</span></button>`).join("")}
+    <div class="term total"><span class="op">=</span>
+      <span class="what">${esc(r.period)}<span class="where">printed in no document · ${esc(r.currency)} ${esc(unit)}</span></span>
+      <span class="v">${fmt(result)}</span>
+      <span class="check ${ok ? "ok" : "bad"}">${ok ? "✓ adds up" : `✗ off by ${fmt(miss, most)}`}</span></div>
+  </div>`;
+}
+
 /** How far a batch is, as a small ring with "n of m" beside it. */
 function ring(done, total) {
   const c = 2 * Math.PI * 7;
@@ -337,7 +362,10 @@ async function renderBatch(batchId, wanted) {
         "not-found": "Figure not found automatically. Use Find (/) or the quote",
         failed: "Could not load here. Use Open ↗",
       }[s.state];
-      statusEl.textContent = text;
+      const terms = rows[index]?.inputs || [];
+      const term = terms[inputShown];
+      statusEl.textContent = term && s.state !== "loading"
+        ? `Term ${inputShown + 1} of ${terms.length}, ${fmt(term.value)}: ${text}` : text;
       statusEl.className = `status ${["found", "quote"].includes(s.state) ? "ok" : ["beneath", "line", "label-only", "not-found", "failed"].includes(s.state) ? "warn" : ""}`;
     },
   });
@@ -440,10 +468,9 @@ async function renderBatch(batchId, wanted) {
       ${exclusion ? `<div class="figure"><span class="num" style="font-size:24px">No figures in gold</span>
           <span class="usd">Excluded: ${esc(r.derivation.replace(/_/g, " "))}</span></div>`
         : `<div class="figure"><span class="num">${fmt(r.value_reported)}</span><span class="unit">${esc(r.currency)} millions</span>
-          <span class="usd">${r.source_unit && r.source_unit !== "millions" ? `Printed as ${fmt(r.source_value_reported)} ${esc(r.source_unit)} · ` : ""}${r.derivation.startsWith("direct") ? esc(r.derivation.replace(/_/g, " ")) : `Derived: ${esc(r.derivation.replace(/_/g, " "))}`}${r.currency !== "USD" && r.value_usd_millions !== null ? ` · ≈ ${fmt(r.value_usd_millions, 1)} USD m` : ""}</span></div>`}
+          <span class="usd">${r.source_unit && r.source_unit !== "millions" ? `Printed as ${fmt(r.source_value_reported)} ${esc(r.source_unit)} · ` : ""}${r.derivation.startsWith("direct") ? esc(r.derivation.replace(/_/g, " ")) : (r.inputs || []).length ? "Derived · printed in no document: check the terms below" : `Derived: ${esc(r.derivation.replace(/_/g, " "))}`}${r.currency !== "USD" && r.value_usd_millions !== null ? ` · ≈ ${fmt(r.value_usd_millions, 1)} USD m` : ""}</span></div>`}
+      ${(r.inputs || []).length ? workedSum(r, inputShown) : ""}
       <div class="quote">${esc(r.source_quote)}</div>
-      ${(r.inputs || []).length ? `<div class="inputs"><span class="muted small">Not printed: ${r.inputs.map((i) => fmt(i.value)).join(" + ")} = ${fmt(r.value_reported)}. Check each part:</span>
-        ${r.inputs.map((i, n) => `<button class="btn ghost small ${n === inputShown ? "on" : ""}" data-input="${n}">${fmt(i.value)} · ${esc(i.label)} · ${esc(host(i.source_url))}</button>`).join("")}</div>` : ""}
       <div class="srcrow"><a class="btn small" href="${esc(openUrl(previewRow(r)))}" target="gv-source" rel="noopener">Open source ↗ <kbd>O</kbd></a>
         <button class="btn ghost small" id="copyq">Copy quote</button>
         <span class="host">${esc(host(r.source_url))}</span><span class="spacer"></span>
@@ -476,7 +503,7 @@ async function renderBatch(batchId, wanted) {
       ${others.length ? `<div class="others"><span class="muted">Others:</span>${others.map((v) =>
         `<span class="chip ${v.verdict === "confirmed" ? "ok" : "flag"}" title="${esc(v.note)}">${esc(nameOf(v.reviewer))} · ${VERDICTS[v.verdict].label.toLowerCase()}${v.value_seen !== null ? ` ${fmt(v.value_seen)}` : ""}</span>`).join("")}</div>` : ""}
       <div class="keys"><span><kbd>1</kbd> confirm</span><span><kbd>F</kbd> then <kbd>2</kbd>–<kbd>6</kbd> flag</span>
-        <span><kbd>J</kbd>/<kbd>K</kbd> next / prev</span><span><kbd>O</kbd> open source</span><span><kbd>/</kbd> find in document</span></div>`;
+        <span><kbd>J</kbd>/<kbd>K</kbd> next / prev</span>${(r.inputs || []).length ? "<span><kbd>[</kbd>/<kbd>]</kbd> previous / next term</span>" : ""}<span><kbd>O</kbd> open source</span><span><kbd>/</kbd> find in document</span></div>`;
 
     card.querySelector("#jump").onchange = (e) => go(Number(e.target.value));
     card.querySelector("#copyq").onclick = () => navigator.clipboard.writeText(r.source_quote).then(() => toast("Quote copied"));
@@ -487,12 +514,17 @@ async function renderBatch(batchId, wanted) {
     card.querySelectorAll("[data-reason]").forEach((b) => b.onclick = () => choose(b.dataset.reason));
     card.querySelector("#saveflag").onclick = saveFlag;
     card.querySelector("#cancelflag").onclick = () => { pending = null; draw(); };
-    card.querySelectorAll("[data-input]").forEach((b) => b.onclick = () => {
-      inputShown = Number(b.dataset.input);
-      find.value = ""; preview.findQuery = null; preview.show(previewRow(r)); draw();
-    });
+    card.querySelectorAll("[data-input]").forEach((b) => b.onclick = () => showTerm(Number(b.dataset.input)));
     section.querySelector("#pvopen").href = openUrl(previewRow(r));
     if (rowChanged) { find.value = ""; preview.findQuery = null; preview.show(previewRow(r)); card.scrollTop = 0; }
+  }
+
+  /** Open term n of a derived row's sum in the preview. */
+  function showTerm(n) {
+    const terms = rows[index].inputs || [];
+    if (!terms.length) return;
+    inputShown = (n + terms.length) % terms.length;
+    find.value = ""; preview.findQuery = null; preview.show(previewRow(rows[index])); draw();
   }
 
   function choose(reason) {
@@ -524,6 +556,8 @@ async function renderBatch(batchId, wanted) {
     else if (k === "k" || e.key === "ArrowUp") { e.preventDefault(); go(index - 1); }
     else if (k === "o") { e.preventDefault(); window.open(openUrl(previewRow(rows[index])), "gv-source", "noopener"); }
     else if (k === "/") { e.preventDefault(); find.focus(); find.select(); }
+    else if (e.key === "]") { e.preventDefault(); showTerm(inputShown + 1); }
+    else if (e.key === "[") { e.preventDefault(); showTerm(inputShown - 1); }
   };
   document.addEventListener("keydown", onKey);
   state.cleanup.push(() => document.removeEventListener("keydown", onKey));

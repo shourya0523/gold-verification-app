@@ -10,6 +10,7 @@ import importlib.util
 import json
 import os
 from collections import Counter
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -98,4 +99,40 @@ def test_a_derived_row_carries_the_parts_its_documents_print(built):
         parts = claims[row["gold_id"]]["bridge_components"]
         assert [(i["value"], i["source_url"]) for i in row["inputs"]] == [(p["value"], p["source_url"]) for p in parts]
         assert sum(i["value"] for i in row["inputs"]) == row["value_reported"], row["gold_id"]
-    assert all(r["inputs"] == [] for r in built["rows"] if r not in bridged)
+    derived = {r["gold_id"] for r in built["rows"] if not (claims[r["gold_id"]].get("derivation") or "direct").startswith("direct")}
+    assert all(r["inputs"] == [] for r in built["rows"] if r["gold_id"] not in derived)
+
+
+def test_a_subtracted_quarter_shows_terms_that_make_it(built):
+    """Terms read from the quote must reproduce the figure, the first must be
+    in the row's own document, and every later one in another quarter of the
+    same series (or the row's own document when gold cites none)."""
+    claims = gold_claims()
+    subtractive = [r for r in built["rows"] if r["derivation"] in module_subtractive()]
+    assert subtractive, "gold has no subtracted quarters: this test no longer checks anything"
+    with_terms = [r for r in subtractive if r["inputs"]]
+    for row in with_terms:
+        terms = row["inputs"]
+        result = row["source_value_reported"] if row["source_value_reported"] is not None else row["value_reported"]
+        total = sum(i["value"] * (1 if i["op"] == "+" else -1) for i in terms)
+        places = max(len(str(v).split(".")[1]) if "." in str(v) else 0 for v in [result, *(i["value"] for i in terms)])
+        assert abs(total - result) <= 0.5 * 10 ** -places * len(terms) + 1e-9, row["gold_id"]
+        assert terms[0]["op"] == "+" and terms[0]["source_url"] == row["source_url"], row["gold_id"]
+        quoted = claims[row["gold_id"]]["source_quote"].replace(",", "")
+        for term in terms:
+            printed = format(Decimal(str(term["value"])).normalize(), "f")
+            assert printed in quoted, (row["gold_id"], term)
+        series_docs = {c["source_url"] for c in claims.values()
+                       if c.get("drug_name") == row["drug_name"] and c.get("period") != row["period"]}
+        for term in terms[1:]:
+            assert term["source_url"] in series_docs | {row["source_url"]}, (row["gold_id"], term)
+    # Most subtracted quarters print their terms in a form the reader can use;
+    # the rest keep the plain note and the quote.
+    assert len(with_terms) >= 0.9 * len(subtractive), f"{len(with_terms)} of {len(subtractive)}"
+
+
+def module_subtractive():
+    spec = importlib.util.spec_from_file_location("build_rows_terms", APP / "scripts" / "build_rows.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.SUBTRACTIVE
