@@ -177,18 +177,31 @@ try {
   // 1 key. The last verdict fires the batch note and the confetti; the queue's
   // Today line and the Progress team strip then count the batch for him.
   const touched = new Set([result.confirmed, result.flagged, result.undone].filter(Boolean));
-  const small = data.batches.filter((x) => !data.rows.some((r) => r.batch_id === x.id && touched.has(r.gold_id)))
+  // A batch of several rows, closed one row at a time, as a reviewer does.
+  const small = data.batches.filter((x) => x.row_count >= 5
+      && !data.rows.some((r) => r.batch_id === x.id && touched.has(r.gold_id)))
     .sort((x, y) => x.row_count - y.row_count)[0];
   const ben = await as("ben");
   await ben.goto(`${base}/#/batch/${encodeURIComponent(small.id)}`);
   await ben.waitForSelector("#ring");
-  const sawConfetti = ben.waitForSelector("canvas.confetti", { state: "attached", timeout: 60_000 }).then(() => true, () => false);
+  // Confetti counts only if it is drawn: a canvas with coloured pixels on it.
+  const sawConfetti = ben.waitForSelector("canvas.confetti", { state: "attached", timeout: 120_000 })
+    .then(() => ben.waitForTimeout(350))
+    .then(() => ben.screenshot({ path: `${out}/confetti.png` }))
+    .then(() => ben.evaluate(() => {
+      const c = document.querySelector("canvas.confetti");
+      if (!c) return 0;
+      const px = c.getContext("2d").getImageData(0, 0, c.width, c.height).data;
+      let n = 0; for (let i = 3; i < px.length; i += 4) if (px[i]) n++;
+      return n;
+    }), () => 0);
   for (let n = 1; n <= small.row_count; n++) {
     await ben.keyboard.press("1");
     await ben.waitForFunction((n) => (document.querySelector("#ring")?.textContent || "").includes(`${n} of`), n, { timeout: 30_000 });
   }
   result.finished = { batch: small.id, rows: data.rows.filter((r) => r.batch_id === small.id).map((r) => r.gold_id) };
-  check("closing a batch fires confetti", await sawConfetti, `${small.id}, ${small.row_count} rows`);
+  const drawn = await sawConfetti;
+  check("closing a batch draws confetti", drawn > 0, `${small.id}, ${small.row_count} rows, ${drawn} pixels drawn`);
   await ben.waitForSelector("#cheer:not([hidden])");
   const note = (await ben.textContent("#cheer")).trim();
   check("closing a batch shows the batch note", /Batch done/.test(note), note);
@@ -203,6 +216,19 @@ try {
   check("the team strip credits the batch to its closer", /Ben 1 batch finished/.test(strip), strip);
   const again = await ben.evaluate(() => JSON.parse(localStorage.getItem("gv-cheer-ben@team.test") || "{}"));
   check("the batch milestone is remembered, so it fires once", Object.keys(again).some((k) => k === `batch:${small.id}`), JSON.stringify(again));
+
+  // 7c. Under reduced motion nothing moves, and the note shows large instead.
+  const still = await (await browser.newContext({ reducedMotion: "reduce" })).newPage();
+  await still.route("**/config.js", (route) => route.fulfill({ contentType: "text/javascript",
+    body: `export default { supabaseUrl: "${base}", supabaseKey: "${tokens.anon}" };` }));
+  await still.goto(`${base}/`);
+  await still.evaluate(async () => (await import("/cheer.js")).cheer("Batch done: test"));
+  const stillState = await still.evaluate(() => ({
+    canvas: !!document.querySelector("canvas.confetti"),
+    note: !document.querySelector("#cheer").hidden && document.querySelector("#cheer").classList.contains("still"),
+  }));
+  check("reduced motion: no confetti, a large note instead", !stillState.canvas && stillState.note, JSON.stringify(stillState));
+  await still.screenshot({ path: `${out}/milestone-still.png` });
 
   // 8. Preview: one row per source host, read from the real documents.
   const byHost = new Map();

@@ -259,6 +259,9 @@ table.plain td.n { text-align: right; }
          max-width: calc(100vw - 32px); }
 .toast[hidden] { display: none; }
 .cheer { bottom: 72px; background: var(--ok-soft); border-color: var(--ok); color: var(--text); }
+.cheer.still { bottom: auto; top: 84px; right: 50%; transform: translateX(50%); padding: 14px 20px; font-size: 15px; }
+.cheer.still .small { font-size: 15px; }
+.cheer .big { font-size: 26px; line-height: 1; }
 .confetti { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 30; }
 .session { margin: -6px 0 14px; color: var(--text-2); }
 .session b { color: var(--text); font-weight: 600; }

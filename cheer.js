@@ -97,12 +97,13 @@ export function today(d = new Date()) {
 const reducedMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /**
- * A short burst of confetti from `from` (an element, else the top centre), in
- * the app's own colours. Drawn on a canvas that ignores the pointer and is
- * gone in under two seconds; nothing at all under reduced motion.
+ * A burst of confetti across the top of the screen, and from `from` (an
+ * element) when given, in the app's own colours. Drawn on a canvas that
+ * ignores the pointer and is gone in under three seconds; nothing moves under
+ * reduced motion (cheer() shows a still note instead). Returns whether it ran.
  */
 export function confetti(from) {
-  if (typeof document === "undefined" || reducedMotion()) return;
+  if (typeof document === "undefined" || reducedMotion()) return false;
   const css = getComputedStyle(document.documentElement);
   const colours = ["--ok", "--accent", "--p2", "--claude", "--flag"].map((v) => css.getPropertyValue(v).trim()).filter(Boolean);
   const canvas = Object.assign(document.createElement("canvas"), { className: "confetti" });
@@ -111,24 +112,24 @@ export function confetti(from) {
   document.body.append(canvas);
   const ctx = canvas.getContext("2d");
   ctx.scale(ratio, ratio);
+  const origins = [{ x: innerWidth / 2, y: innerHeight * 0.18, n: 110, spread: 1.3 }];
   const box = from?.getBoundingClientRect?.();
-  const x0 = box ? box.left + box.width / 2 : innerWidth / 2;
-  const y0 = box ? box.top + box.height / 2 : innerHeight * 0.25;
-  const bits = Array.from({ length: 70 }, (_, i) => {
-    const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * 0.9;
-    const speed = 5 + Math.random() * 6;
-    return { x: x0, y: y0, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
-      size: 4 + Math.random() * 4, spin: Math.random() * Math.PI, turn: (Math.random() - 0.5) * 0.3,
+  if (box && box.width) origins.push({ x: box.left + box.width / 2, y: box.top + box.height / 2, n: 50, spread: 0.9 });
+  const bits = origins.flatMap((o) => Array.from({ length: o.n }, (_, i) => {
+    const angle = -Math.PI / 2 + (Math.random() - 0.5) * Math.PI * o.spread;
+    const speed = 6 + Math.random() * 8;
+    return { x: o.x, y: o.y, vx: Math.cos(angle) * speed, vy: Math.sin(angle) * speed,
+      size: 6 + Math.random() * 6, spin: Math.random() * Math.PI, turn: (Math.random() - 0.5) * 0.3,
       colour: colours[i % colours.length] };
-  });
+  }));
   const start = performance.now();
-  const LIFE = 1600;
+  const LIFE = 2600;
   const frame = (now) => {
     const t = now - start;
     ctx.clearRect(0, 0, innerWidth, innerHeight);
-    ctx.globalAlpha = Math.max(0, 1 - t / LIFE);
+    ctx.globalAlpha = Math.max(0, Math.min(1, 2.2 - (2 * t) / LIFE));
     for (const b of bits) {
-      b.vy += 0.25; b.vx *= 0.985; b.x += b.vx; b.y += b.vy; b.spin += b.turn;
+      b.vy += 0.22; b.vx *= 0.985; b.x += b.vx; b.y += b.vy; b.spin += b.turn;
       ctx.save(); ctx.translate(b.x, b.y); ctx.rotate(b.spin);
       ctx.fillStyle = b.colour; ctx.fillRect(-b.size / 2, -b.size / 4, b.size, b.size / 2);
       ctx.restore();
@@ -136,6 +137,7 @@ export function confetti(from) {
     if (t < LIFE) requestAnimationFrame(frame); else canvas.remove();
   };
   requestAnimationFrame(frame);
+  return true;
 }
 
 // ---------------------------------------------------------------- the note
@@ -145,9 +147,12 @@ let cheerTimer;
 export function cheer(html, { burst = true, from } = {}) {
   const el = document.getElementById("cheer");
   if (!el) return;
-  el.innerHTML = `<span class="small">${html}</span>`;
+  // A milestone with no confetti (reduced motion) is still a moment: the note
+  // shows large at the top of the screen instead of in the corner.
+  const still = burst && !confetti(from);
+  el.classList.toggle("still", still);
+  el.innerHTML = `${still ? '<span class="big" aria-hidden="true">🎉</span>' : ""}<span class="small">${html}</span>`;
   el.hidden = false;
   clearTimeout(cheerTimer);
-  cheerTimer = setTimeout(() => { el.hidden = true; }, 6000);
-  if (burst) confetti(from);
+  cheerTimer = setTimeout(() => { el.hidden = true; }, still ? 8000 : 6000);
 }
